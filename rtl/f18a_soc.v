@@ -278,7 +278,16 @@ module top (
         C1_UART_STAT = 11'h7F2,
         C1_LED       = 11'h7F3,
         C1_BUTTON    = 11'h7F4,
+        C1_TICKS     = 11'h7F5,
         C1_INST_PORT = 11'h7F9;
+
+    // Free-running 18-bit tick counter. One F18A word, no shadow
+    // games. Wraps every 2^18 cycles ≈ 9.7 ms at 27 MHz / 4.9 ms at
+    // 54 MHz — short enough that it overflows the run, but long
+    // enough for most word-level micro-benchmarks. For longer scopes,
+    // either count wraps in user code (read, run, read; if second
+    // sample < first, add 0x40000) or time externally over UART.
+    reg [17:0] tick_counter = 18'd0;
 
     wire c1_is_io  = c1_addr[10];
     wire c1_is_ram = ~c1_is_io;
@@ -335,6 +344,7 @@ module top (
             C1_UART_STAT: c1_io_rdata = {16'd0, ~mbox_10_full, rx_avail};
             C1_LED:       c1_io_rdata = {15'd0, led_reg};
             C1_BUTTON:    c1_io_rdata = {17'd0, button_a_pressed};
+            C1_TICKS:     c1_io_rdata = tick_counter;
             C1_INST_PORT: c1_io_rdata = {rx_inst_hi, rx_inst_mid, rx_inst_lo};
             default:      c1_io_rdata = 18'd0;
         endcase
@@ -343,6 +353,16 @@ module top (
     always @(*) begin
         if (c1_is_io) c1_rdata = c1_io_rdata;
         else          c1_rdata = c1_bram_dout;
+    end
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Tick counter
+    // ══════════════════════════════════════════════════════════════════════
+    // Resets to 0 on POR + button-B soft reset, so each fresh program
+    // load gets a clean baseline.
+    always @(posedge sys_clk) begin
+        if (!resetn) tick_counter <= 18'd0;
+        else         tick_counter <= tick_counter + 18'd1;
     end
 
     // ══════════════════════════════════════════════════════════════════════

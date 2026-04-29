@@ -98,12 +98,15 @@ are general-purpose BSRAM. The full 1K is yours for code + data.
 
 ```
 0x000..0x3FF   core RAM (host streams the loader here, then jumps in)
-0x7F0..0x7F4   memory-mapped peripherals:
+0x7F0..0x7F5   memory-mapped peripherals:
                  0x7F0 UART_RX     read pops one byte (blocks if none)
                  0x7F1 UART_TX     write enqueues a byte (blocks if full)
                  0x7F2 UART_STAT   bit0 rx_avail, bit1 tx_room
                  0x7F3 LED         bits 2:0 = R, G, B (common-anode at the pad)
                  0x7F4 BUTTON      bit0 = button A pressed (active high)
+                 0x7F5 TICKS       18-bit free-running cycle counter
+                                   (resets on POR / button-B; wraps every
+                                    9.7 ms at 27 MHz)
 0x7F9          INST_PORT — 3 UART bytes → one 18-bit word
                  (read blocks until 3 bytes have been assembled)
 ```
@@ -190,9 +193,12 @@ fresh image compiled on the host and shipped to RAM.
 - `>R` / `R>` (return-stack stash)
 - `1+`, `1-`, `negate`
 - `0=`, `if … else … then`
-- `:` *name* `body` `;`
+- `:` *name* `body` `;` (with **tail-call optimisation** — `: foo bar ;`
+  compiles `bar` as a `jump:` instead of `call:`+`ret`, saving an rstk
+  slot and a cycle on every leaf call at end of a definition)
 - `emit` (write low byte of T to UART_TX, with TX-room polling)
 - `@`, `!`, `@b`, `!b`, `a`, `a!`, `b!` (raw F18A memory & pointer ops)
+- `ticks` (push the 18-bit cycle counter — TICKS @0x7F5)
 
 It also accepts a few **raw F18A words directly** when you want to drop
 closer to the metal: `+*`, `@p`, `!p`, `@+`, `!+`, and `ex`.

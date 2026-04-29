@@ -67,6 +67,7 @@ MACROS: Dict[str, List[str]] = {
     "invert": ["inv"],
     "negate": ["inv", "1", "+"],
     "not":    ["inv"],                   # bit-not alias used by some forths
+    "ticks":  ["0x7F5", "a!", "@"],      # 18-bit free-running cycle counter
 }
 
 
@@ -325,7 +326,27 @@ class _BodyEmitter:
 
     # ── Termination ─────────────────────────────────────────────
     def end_with_ret(self) -> None:
-        # Final word for a `:` body: a stand-alone slot-0 ret.
+        # Tail-call optimisation: if the last emitted step is a plain
+        # `call:NAME` at the end of the body, rewrite it to `jump:NAME`
+        # and skip the trailing ret. The callee's own RET will pop our
+        # caller's frame off rstk directly — one fewer slot, one fewer
+        # rstk push, and a shorter peak rsp on recursive definitions.
+        # Safe only when nothing branches to the post-call label
+        # (which is the natural fall-through cell after `call:NAME`);
+        # if some upstream `if` / `jump:` targets that label we leave
+        # it alone and emit the conventional ret.
+        if len(self.lines) >= 2:
+            last = self.lines[-1]
+            tco_target = None
+            stripped = last.strip()
+            if stripped.startswith("call:") and " " not in stripped:
+                tco_target = stripped[len("call:"):]
+            if tco_target is not None:
+                post_lbl = self._label(self.step)
+                if not any(post_lbl in ln for ln in self.lines[:-1]):
+                    self.lines[-1] = f"    jump:{tco_target}"
+                    return
+        # Conventional ret: stand-alone slot-0 `;`.
         self.lines.append(f"{self.cur_label()}:")
         self.lines.append("    ;")
         self.step += 1
