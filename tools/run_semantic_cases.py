@@ -17,7 +17,8 @@ from pathlib import Path
 import asm
 
 
-ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parents[1]
+RTL_DIR = REPO_ROOT / "rtl"
 CASE_HEX = Path("/tmp/f18a_semantic_case.hex")
 CASE_TB = Path("/tmp/tb_semantic_case.v")
 CASE_BIN = Path("/tmp/tb_semantic_case")
@@ -582,8 +583,8 @@ def build_tb(case: Case) -> None:
         )
     )
     subprocess.run(
-        ["iverilog", "-g2012", "-o", str(CASE_BIN), str(CASE_TB), "f18a_core.v"],
-        cwd=ROOT,
+        ["iverilog", "-g2012", "-o", str(CASE_BIN), str(CASE_TB),
+         str(RTL_DIR / "f18a_core.v")],
         check=True,
     )
 
@@ -591,7 +592,7 @@ def build_tb(case: Case) -> None:
 def run_case(case: Case) -> None:
     assemble_case(case)
     build_tb(case)
-    proc = subprocess.run([str(CASE_BIN)], cwd=ROOT, text=True, capture_output=True)
+    proc = subprocess.run([str(CASE_BIN)], text=True, capture_output=True)
     if proc.returncode != 0:
         raise RuntimeError(proc.stdout + proc.stderr)
     if f"PASS {case.name}" not in proc.stdout:

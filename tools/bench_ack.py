@@ -15,8 +15,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+TOOLS_DIR = REPO_ROOT / "tools"
+RTL_DIR   = REPO_ROOT / "rtl"
+PROGRAMS_DIR = REPO_ROOT / "programs"
+sys.path.insert(0, str(TOOLS_DIR))
 sys.path.insert(0, "/home/me/.local/lib/python3.13/site-packages")
 import asm  # noqa: E402
 import ga_aforth  # noqa: E402
@@ -86,14 +89,14 @@ def build_perf_tb():
         f.write(PERF_TB_SRC)
     bin_ = "/tmp/bench_ack_tb"
     subprocess.run(
-        ["iverilog", "-g2012", "-o", bin_, tb, str(ROOT / "f18a_core.v")],
+        ["iverilog", "-g2012", "-o", bin_, tb, str(RTL_DIR / "f18a_core.v")],
         check=True, env=ENV,
     )
     return bin_
 
 
 def patch_aforth(m, n):
-    src = (ROOT / "aforth_ack.ga").read_text()
+    src = (PROGRAMS_DIR / "aforth_ack.ga").read_text()
     return re.sub(r"\b\d+\s+\d+\s+ack\b", f"{m} {n} ack", src, count=1)
 
 
@@ -130,7 +133,7 @@ def run_native(m, n):
 def main():
     # Make sure the native ackermann TB and hex are built.
     subprocess.run(["make", "/tmp/tb_ack", "/tmp/ack.hex"],
-                   check=True, env=ENV, cwd=ROOT, capture_output=True)
+                   check=True, env=ENV, cwd=REPO_ROOT, capture_output=True)
     aforth_bin = build_perf_tb()
 
     cases = [(0, 0), (0, 5), (1, 1), (1, 5), (2, 0), (2, 1),
