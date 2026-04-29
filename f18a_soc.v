@@ -44,21 +44,22 @@ module top (
         end
     endfunction
 
-// Default 16-deep dstack / 32-deep rstack. The real GA144 F18A is 8/8,
-// but recursive Forth (e.g. ack_forth) overflows rstk=8 even on shallow
-// cases like A(2,2), and sticking to the deeper default keeps both the
-// iterative and recursive demos working out of the box. Override with
+// Default 64-deep dstack / 128-deep rstack. The stacks live in BSRAM
+// (one block each — see f18a_core.v), so depth is essentially free
+// up to the BSRAM word capacity (256 entries × 18 bits per cell).
+// 128-deep rstk fits A(3,3) recursive (peak rsp = 121); 64-deep dstk
+// is plenty for any reasonable F18A program. Override with
 // `make f18a.fs DSTK_DEPTH=8 RSTK_DEPTH=8` for the GA144-faithful build.
 `ifdef DSTK_DEPTH
     localparam integer C1_DSTK_DEPTH = `DSTK_DEPTH;
 `else
-    localparam integer C1_DSTK_DEPTH = 16;
+    localparam integer C1_DSTK_DEPTH = 64;
 `endif
 
 `ifdef RSTK_DEPTH
     localparam integer C1_RSTK_DEPTH = `RSTK_DEPTH;
 `else
-    localparam integer C1_RSTK_DEPTH = 32;
+    localparam integer C1_RSTK_DEPTH = 128;
 `endif
 
     localparam integer C1_DSP_BITS = clog2_int(C1_DSTK_DEPTH);

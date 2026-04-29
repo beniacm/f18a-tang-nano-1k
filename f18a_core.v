@@ -21,6 +21,17 @@
 // ST_MWAIT/ST_MEMRD. Registering mem_addr removes the placement-sensitive
 // combinational path into GW1NZ-1 BSRAM that could glitch on some seeds.
 //
+// Stacks: dstk[] and rstk[] are held in BSRAM rather than LUT4-based
+// distributed RAM. T, S, R are still registers; the stacks proper hold
+// what's "below S" and "below R". Each cycle we issue a synchronous
+// read at next_dsp-1 (resp. next_rsp-1), where next_dsp/next_rsp is the
+// pointer's value AFTER the current op fires. The result lands one
+// edge later, so on the cycle after a pop, dstk_rdata is already the
+// new top-of-below. Push collisions (a write to addr X immediately
+// followed by a read at X) are handled by an explicit write-through
+// forwarding mux in the BSRAM block — push semantics need the just-
+// written value visible to the next cycle's pop.
+//
 // Build flags (cumulative — MINIMAL implies NO_BIG):
 //   `define NO_BIG    strip the five most expensive ops that don't pay for
 //                     themselves on small hw: CALL, OVER, POP, PUSH, MULS.
@@ -158,8 +169,13 @@ module f18a_core #(
     reg [17:0] A = 18'd0;
     reg [17:0] B;     // B is reset by the synchronous block (DB001 §3.1).
 
-    (* ram_style = "distributed" *) reg [17:0] dstk [0:DSTK_DEPTH-1];
-    (* ram_style = "distributed" *) reg [17:0] rstk [0:RSTK_DEPTH-1];
+    // Stacks live in BSRAM. The block-RAM pragma steers yosys away from
+    // distributed-LUT inference; pre-fetched reads + write-through
+    // forwarding hide the synchronous-read latency.
+    (* ram_style = "block" *) reg [17:0] dstk [0:DSTK_DEPTH-1];
+    (* ram_style = "block" *) reg [17:0] rstk [0:RSTK_DEPTH-1];
+    reg [17:0] dstk_rdata;
+    reg [17:0] rstk_rdata;
     reg [DSP_BITS-1:0] dsp;
     reg [RSP_BITS-1:0] rsp;
 
@@ -244,6 +260,109 @@ module f18a_core #(
     wire [17:0] R_dec     = R - 18'd1;
     wire [ADDR_BITS-1:0] current_word = P - 1'b1;
 
+    // ── Stack push/pop classification ──────────────────────────────
+    // Combinationally decode whether the current op (in ST_EXEC, or the
+    // implicit push at ST_MEMRD) modifies dsp/rsp, and whether it writes
+    // to the stack BSRAMs. The classification feeds two things:
+    //   * next_dsp/next_rsp — used as the BSRAM read address one cycle
+    //     ahead, so by the time the op completes, dstk_rdata holds the
+    //     value at the new dsp-1 (= "S below" after the op).
+    //   * dstk_we / rstk_we — fired in the same cycle as the op, so the
+    //     write commits at the same clock edge that updates T/S/R/dsp.
+    // Falling through to dsp_op_push=0/dsp_op_pop=0 leaves the stack
+    // untouched and dstk_rdata stable (steady-state read at dsp-1).
+    reg dsp_op_push;
+    reg dsp_op_pop;
+    reg rsp_op_push;
+    reg rsp_op_pop;
+    reg dstk_we;
+    reg rstk_we;
+
+    always @* begin
+        dsp_op_push = 1'b0;
+        dsp_op_pop  = 1'b0;
+        rsp_op_push = 1'b0;
+        rsp_op_pop  = 1'b0;
+        dstk_we     = 1'b0;
+        rstk_we     = 1'b0;
+        if (st == ST_EXEC) begin
+            case (op)
+            OP_RET: rsp_op_pop = !rsp_empty;
+`ifndef NO_CALL
+            OP_CALL: begin rsp_op_push = 1'b1; rstk_we = 1'b1; end
+`endif
+`ifndef NO_UNEX
+            OP_UNEX: if (R_is_zero && !rsp_empty) rsp_op_pop = 1'b1;
+`endif
+`ifndef NO_NEXT
+            OP_NEXT: if (R_is_zero && !rsp_empty) rsp_op_pop = 1'b1;
+`endif
+            OP_DROP, OP_ADD, OP_AND, OP_XOR,
+            OP_ASTO, OP_BSTO,
+            OP_STA, OP_STB, OP_ST, OP_STP: dsp_op_pop = 1'b1;
+            OP_DUP, OP_A: begin dsp_op_push = 1'b1; dstk_we = 1'b1; end
+`ifndef NO_OVER
+            OP_OVER: begin dsp_op_push = 1'b1; dstk_we = 1'b1; end
+`endif
+`ifndef NO_POP
+            OP_POP:  begin dsp_op_push = 1'b1; rsp_op_pop = 1'b1; dstk_we = 1'b1; end
+`endif
+`ifndef NO_PUSH
+            OP_PUSH: begin dsp_op_pop = 1'b1; rsp_op_push = 1'b1; rstk_we = 1'b1; end
+`endif
+`ifndef NO_MULS
+  `ifdef MULS_TRAP
+            OP_MULS: begin rsp_op_push = 1'b1; rstk_we = 1'b1; end
+  `endif
+`endif
+            default: ;
+            endcase
+        end
+        if (st == ST_MEMRD) begin
+            dsp_op_push = 1'b1;
+            dstk_we     = 1'b1;
+        end
+    end
+
+    wire [DSP_BITS-1:0] next_dsp = dsp_op_push ? dsp_next :
+                                   dsp_op_pop  ? dsp_prev : dsp;
+    wire [RSP_BITS-1:0] next_rsp = rsp_op_push ? rsp_next :
+                                   rsp_op_pop  ? rsp_prev : rsp;
+
+    // BSRAM read addr is "where dsp-1 will be after this op". When the
+    // next state is ST_FETCH (slot 3 done, mem op done, etc.) dsp may
+    // not change for several cycles — the read just keeps re-reading
+    // the same addr, which is harmless and keeps dstk_rdata stable.
+    wire [DSP_BITS-1:0] dstk_raddr = next_dsp - DSP_ONE;
+    wire [RSP_BITS-1:0] rstk_raddr = next_rsp - RSP_ONE;
+
+    // dstk push wdata is always S (the value getting demoted). rstk push
+    // wdata is always R. waddr is the current pointer (next-free slot).
+    wire [DSP_BITS-1:0] dstk_waddr = dsp;
+    wire [RSP_BITS-1:0] rstk_waddr = rsp;
+    wire [17:0]         dstk_wdata = S;
+    wire [17:0]         rstk_wdata = R;
+
+    // BSRAM blocks. Synchronous read with explicit write-through
+    // forwarding: when waddr == raddr in the same cycle (push followed
+    // by next-cycle pop reading what we just wrote), rdata sees the
+    // new value. Without this the pop would observe stale data.
+    always @(posedge clk) begin
+        if (dstk_we) dstk[dstk_waddr] <= dstk_wdata;
+        if (dstk_we && dstk_raddr == dstk_waddr)
+            dstk_rdata <= dstk_wdata;
+        else
+            dstk_rdata <= dstk[dstk_raddr];
+    end
+
+    always @(posedge clk) begin
+        if (rstk_we) rstk[rstk_waddr] <= rstk_wdata;
+        if (rstk_we && rstk_raddr == rstk_waddr)
+            rstk_rdata <= rstk_wdata;
+        else
+            rstk_rdata <= rstk[rstk_raddr];
+    end
+
     assign dbg_T    = T;
     assign dbg_I    = I;
     assign dbg_P    = P;
@@ -315,7 +434,7 @@ module f18a_core #(
                             st <= ST_FETCH;
                         end else begin
                             P   <= R[ADDR_BITS-1:0];
-                            R   <= rstk[rsp_prev];
+                            R   <= rstk_rdata;
                             rsp <= rsp_prev;
                             st  <= ST_FETCH;
                         end
@@ -340,11 +459,11 @@ module f18a_core #(
 `endif
 `ifndef NO_CALL
                     OP_CALL: begin
-                        rstk[rsp] <= R;
-                        rsp       <= rsp_next;
-                        R         <= {{(18-ADDR_BITS){1'b0}}, P};
-                        P         <= jaddr;
-                        st        <= ST_FETCH;
+                        // rstk write happens via combinational rstk_we.
+                        rsp <= rsp_next;
+                        R   <= {{(18-ADDR_BITS){1'b0}}, P};
+                        P   <= jaddr;
+                        st  <= ST_FETCH;
                     end
 `endif
 `ifndef NO_MIF
@@ -369,7 +488,7 @@ module f18a_core #(
                             if (rsp_empty) begin
                                 R <= 18'd0;
                             end else begin
-                                R   <= rstk[rsp_prev];
+                                R   <= rstk_rdata;
                                 rsp <= rsp_prev;
                             end
                         end else begin
@@ -385,7 +504,7 @@ module f18a_core #(
                             if (rsp_empty) begin
                                 R <= 18'd0;
                             end else begin
-                                R   <= rstk[rsp_prev];
+                                R   <= rstk_rdata;
                                 rsp <= rsp_prev;
                             end
                         end else begin
@@ -430,7 +549,7 @@ module f18a_core #(
                         mem_we    <= 1'b1;
                         P         <= P + 1'b1;
                         T         <= S;
-                        S         <= dstk[dsp_prev];
+                        S         <= dstk_rdata;
                         dsp       <= dsp_prev;
                         slot      <= slot;
                         st        <= ST_MEMWR;
@@ -441,7 +560,7 @@ module f18a_core #(
                         mem_we    <= 1'b1;
                         A         <= A + 18'd1;
                         T         <= S;
-                        S         <= dstk[dsp_prev];
+                        S         <= dstk_rdata;
                         dsp       <= dsp_prev;
                         slot      <= slot;
                         st        <= ST_MEMWR;
@@ -451,7 +570,7 @@ module f18a_core #(
                         mem_wdata <= T;
                         mem_we    <= 1'b1;
                         T         <= S;
-                        S         <= dstk[dsp_prev];
+                        S         <= dstk_rdata;
                         dsp       <= dsp_prev;
                         slot      <= slot;
                         st        <= ST_MEMWR;
@@ -461,7 +580,7 @@ module f18a_core #(
                         mem_wdata <= T;
                         mem_we    <= 1'b1;
                         T         <= S;
-                        S         <= dstk[dsp_prev];
+                        S         <= dstk_rdata;
                         dsp       <= dsp_prev;
                         slot      <= slot;
                         st        <= ST_MEMWR;
@@ -483,11 +602,10 @@ module f18a_core #(
                         // fetched after the +* word (= P), so any ops in
                         // slots 1..3 of the user's MULS word are skipped.
                         // Programs must put +* in slot 0 of its word.
-                        rstk[rsp] <= R;
-                        rsp       <= rsp_next;
-                        R         <= {{(18-ADDR_BITS){1'b0}}, P};
-                        P         <= MULS_HANDLER_ADDR;
-                        st        <= ST_FETCH;
+                        rsp <= rsp_next;
+                        R   <= {{(18-ADDR_BITS){1'b0}}, P};
+                        P   <= MULS_HANDLER_ADDR;
+                        st  <= ST_FETCH;
 `else
   `ifndef NO_P9_ARITH
                         if (arith_ext && A[0]) carry <= alu_add_ext[18];
@@ -503,38 +621,37 @@ module f18a_core #(
 `ifndef NO_P9_ARITH
                         if (arith_ext) carry <= alu_add_ext[18];
 `endif
-                        S   <= dstk[dsp_prev];
+                        S   <= dstk_rdata;
                         dsp <= dsp_prev;
                     end
                     OP_AND: begin
                         T   <= alu_and;
-                        S   <= dstk[dsp_prev];
+                        S   <= dstk_rdata;
                         dsp <= dsp_prev;
                     end
                     OP_XOR: begin
                         T   <= alu_xor;
-                        S   <= dstk[dsp_prev];
+                        S   <= dstk_rdata;
                         dsp <= dsp_prev;
                     end
 
                     // ── Stack ops ────────────────────────────
                     OP_DROP: begin
                         T   <= S;
-                        S   <= dstk[dsp_prev];
+                        S   <= dstk_rdata;
                         dsp <= dsp_prev;
                     end
 
                     OP_DUP: begin
-                        dstk[dsp] <= S;
-                        dsp       <= dsp_next;
-                        S         <= T;
+                        // dstk write fires via combinational dstk_we.
+                        dsp <= dsp_next;
+                        S   <= T;
                     end
 
 `ifndef NO_OVER
                     OP_OVER: begin
                         // ( a b -- a b a )
-                        dstk[dsp] <= S;
-                        dsp       <= dsp_next;
+                        dsp <= dsp_next;
                         T <= S;
                         S <= T;
                     end
@@ -542,14 +659,13 @@ module f18a_core #(
 `ifndef NO_POP
                     OP_POP: begin
                         // R → data stack
-                        dstk[dsp] <= S;
-                        dsp       <= dsp_next;
-                        S         <= T;
-                        T         <= R;
+                        dsp <= dsp_next;
+                        S   <= T;
+                        T   <= R;
                         if (rsp_empty) begin
                             R <= 18'd0;
                         end else begin
-                            R   <= rstk[rsp_prev];
+                            R   <= rstk_rdata;
                             rsp <= rsp_prev;
                         end
                     end
@@ -557,33 +673,31 @@ module f18a_core #(
 `ifndef NO_PUSH
                     OP_PUSH: begin
                         // data stack → R
-                        rstk[rsp] <= R;
-                        rsp       <= rsp_next;
-                        R         <= T;
-                        T         <= S;
-                        S         <= dstk[dsp_prev];
-                        dsp       <= dsp_prev;
+                        rsp <= rsp_next;
+                        R   <= T;
+                        T   <= S;
+                        S   <= dstk_rdata;
+                        dsp <= dsp_prev;
                     end
 `endif
 
                     OP_A: begin
-                        dstk[dsp] <= S;
-                        dsp       <= dsp_next;
-                        S         <= T;
-                        T         <= A;
+                        dsp <= dsp_next;
+                        S   <= T;
+                        T   <= A;
                     end
 
                     OP_ASTO: begin
                         A   <= T;          // full 18 bits (MULS shifts through A)
                         T   <= S;
-                        S   <= dstk[dsp_prev];
+                        S   <= dstk_rdata;
                         dsp <= dsp_prev;
                     end
 
                     OP_BSTO: begin
                         B   <= T;
                         T   <= S;
-                        S   <= dstk[dsp_prev];
+                        S   <= dstk_rdata;
                         dsp <= dsp_prev;
                     end
 
@@ -599,10 +713,10 @@ module f18a_core #(
                 end
 
                 ST_MEMRD: begin
-                    dstk[dsp] <= S;
-                    dsp       <= dsp_next;
-                    S         <= T;
-                    T         <= mem_rdata;
+                    // dstk write fires via combinational dstk_we (st==ST_MEMRD).
+                    dsp <= dsp_next;
+                    S   <= T;
+                    T   <= mem_rdata;
 
                     if (slot == 2'd3) st <= ST_FETCH;
                     else begin

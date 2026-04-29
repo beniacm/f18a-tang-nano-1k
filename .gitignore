@@ -21,3 +21,9 @@ __pycache__/
 
 # Temp build outputs
 /tmp/*
+
+# GreenArrays-copyrighted reference PDF kept locally for convenience
+DB001-221113-F18A.pdf
+
+# Project-local Claude Code config
+.claude/

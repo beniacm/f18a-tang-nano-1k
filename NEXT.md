@@ -17,6 +17,16 @@
   1.7×–2.3× faster in cycles (BSRAM-stack ops cost more than in-core
   rstk recursion), at the cost of much deeper hardware stacks
   (peak rsp = 121 for A(3,3) vs 0 for native iterative).
+- **dstk + rstk in BSRAM.** Both stacks moved out of distributed LUT
+  RAM into block RAM (one BSRAM each). Reads use a one-cycle-ahead
+  combinational `next_dsp` / `next_rsp` lookahead so the registered
+  read addr arrives at the BSRAM port one edge before it's needed;
+  push collisions are handled by an explicit write-through forwarding
+  mux in the same always block. New defaults: `DSTK_DEPTH = 64`,
+  `RSTK_DEPTH = 128` (fits A(3,3) recursive — peak rsp = 121, runs
+  end-to-end on hardware via `ga_aforth.py --hw aforth_ack.ga`).
+  73 % LUT4 / 75 % BSRAM (3/4 blocks) at 92 MHz post-route — down from
+  80 % LUT4 with the old distributed-RAM stacks.
 
 ## Open / queued
 
@@ -40,26 +50,15 @@ MINIMAL — even MINIMAL fails legal placement. A larger Gowin part
 exercised by `tb_dual.v` + `dual_ping.f18a` if you check out that
 branch.
 
-### Asymmetric stacks for deeper recursion (measured)
-Native iterative ackermann fits any depth at peak dsp = 5; recursive
-versions need much more rstk. Tried several depths on hardware:
+### Stack depth on hardware (post-BSRAM-move)
 
-| Build                              | LUT4   | A(3,1) | A(3,2) | A(2,7) | A(3,3) |
-|------------------------------------|--------|:------:|:------:|:------:|:------:|
-| `f18a.fs` (default 16/32)          | 77 %   |  ✓     |  ✗     |  ✗     |  ✗     |
-| `f18a.fs RSTK_DEPTH=64`            | 87 %   |  ✓     |  ✓     |  ✓     |  ✗     |
-| `f18a.fs RSTK_DEPTH=128`           | n/a    |  -     |  -     |  -     |  -     |
+With dstk and rstk in BSRAM, depth no longer competes with the LUT4
+budget — each block holds 256+ entries, so we just pick a deep
+default and forget about it. Confirmed on hardware:
 
-`RSTK_DEPTH=128` overflows the LUT4 budget — rstk infers as LUTRAM
-once it can't fit BSRAM (apycula already gives the 1 BSRAM to
-`c1_mem`), and 128 × 18 bits is too many LUT4 cells.
+| Build                              | LUT4 | BSRAM | A(3,1) | A(3,2) | A(2,7) | A(3,3) |
+|------------------------------------|------|-------|:------:|:------:|:------:|:------:|
+| `f18a.fs` (default 64/128)         | 75 % | 3/4   |  ✓     |  ✓     |  ✓     |  ✓     |
 
-`RSTK_DEPTH=64` is the sweet spot — fits at 87 %, runs A(3,2) and
-A(2,7) recursive aforth/Forth on hardware. A(3,3) still doesn't fit
-(peak rsp = 121 in sim).
-
-Open path for A(3,3) recursive on this chip: spill rstk to BSRAM
-when it overflows in-core capacity. The core would push to memory at
-some agreed scratch range (e.g. 0x300..0x37F) on rstk overflow and
-pop back transparently. Costs: a few LUT4 for the overflow logic
-plus per-spill cycles.
+A(3,3) recursive runs end-to-end via `ga_aforth.py --hw aforth_ack.ga`
+(peak rsp = 121, fits in the 128-deep BSRAM rstk).

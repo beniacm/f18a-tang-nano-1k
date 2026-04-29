@@ -121,12 +121,18 @@ re-flash.
 ## Build & flash
 
 ```sh
-make f18a.fs                       # default: 27 MHz (osc), fits at 80 % LUT4
+make f18a.fs                       # default: 27 MHz, 75 % LUT4 / 3 BSRAM
 make f18a.fs PLL_FREQ=54           # rPLL build (synthesises but see NEXT.md)
 make flash-sram                    # volatile SRAM load (lost on power cycle)
 make flash                         # SPI flash (persists across power cycles)
 make test                          # full regression
 ```
+
+The default build packs the F18A core, 1 K main BSRAM, 64-deep dstk
+BSRAM, 128-deep rstk BSRAM, and the SoC plumbing (UART, INST_PORT, LED,
+button) at 75 % LUT4, 105 MHz fmax post-route. dstk/rstk live in BSRAM
+rather than distributed LUT RAM (one block each), so deep recursive
+aforth — including A(3,3), peak rsp = 121 — runs end-to-end on chip.
 
 UART runs at 115200 baud on `/dev/ttyUSB0`. The Tang Nano 1K's BL702 USB
 bridge **isn't wired to the FPGA**, so you'll need an external FTDI
