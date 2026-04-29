@@ -48,7 +48,8 @@ python3 fft_host.py                         # 128-word echo round-trip
 ├── Makefile             # `make f18a.fs`, `make flash-sram`, `make ack`, `make test`
 │
 ├── asm.py               # F18A assembler (#define / #variable, slot-3 NOP `.`)
-├── ackermann.f18a       # Iterative Ackermann demo program
+├── ackermann.f18a       # Iterative Ackermann (pending m's on dstk; A(3,3) at 64 dstk)
+├── ackermann_ram.f18a   # Iterative Ackermann (pending m's in RAM; deeper A(m,n))
 ├── lib.f18a             # Helper words / examples
 ├── hello.f18a           # "hi\n" UART loop
 ├── core1.f18a           # 'B'-spammer
@@ -121,12 +122,18 @@ re-flash.
 ## Build & flash
 
 ```sh
-make f18a.fs                       # default: 27 MHz (osc), fits at 80 % LUT4
+make f18a.fs                       # default: 27 MHz, 75 % LUT4 / 3 BSRAM
 make f18a.fs PLL_FREQ=54           # rPLL build (synthesises but see NEXT.md)
 make flash-sram                    # volatile SRAM load (lost on power cycle)
 make flash                         # SPI flash (persists across power cycles)
 make test                          # full regression
 ```
+
+The default build packs the F18A core, 1 K main BSRAM, 64-deep dstk
+BSRAM, 128-deep rstk BSRAM, and the SoC plumbing (UART, INST_PORT, LED,
+button) at 75 % LUT4, 105 MHz fmax post-route. dstk/rstk live in BSRAM
+rather than distributed LUT RAM (one block each), so deep recursive
+aforth — including A(3,3), peak rsp = 121 — runs end-to-end on chip.
 
 UART runs at 115200 baud on `/dev/ttyUSB0`. The Tang Nano 1K's BL702 USB
 bridge **isn't wired to the FPGA**, so you'll need an external FTDI
@@ -220,6 +227,13 @@ each program returns to INST_PORT after its main word, matching how
 `ackermann.f18a` (iterative, hand-asm) and `aforth_ack.ga`
 (recursive, via ga-tools). Recursive aforth is consistently
 1.7×–2.3× faster, at the cost of much deeper hardware stacks.
+
+Two iterative variants ship: `ackermann.f18a` keeps pending m's on
+the BSRAM-backed dstk (no RAM access in the inner loop, ~25 % fewer
+cycles, capped at A(3,3) on the 64-deep default — A(3,4) needs
+`make f18a.fs DSTK_DEPTH=128`). `ackermann_ram.f18a` is the original
+software-stack-in-RAM form, slower per iter but the stack grows
+unbounded inside the 1 K BSRAM, so A(3,5) and beyond fit.
 
 ## Streaming-port protocol (boot loader)
 

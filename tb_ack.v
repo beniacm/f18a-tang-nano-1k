@@ -94,9 +94,10 @@ module tb_ack;
     );
 
     // Result watcher + dstk-depth high-water mark. The SoC ships with
-    // a 16-deep dstack, so any program that wants to run on hardware
-    // needs peak dstk ≤ 16 — fail the sim loudly if it doesn't.
-    localparam integer HW_DSTK_DEPTH = 16;
+    // a 64-deep dstack (BSRAM-backed), so any program that wants to
+    // run on hardware needs peak dstk ≤ 64 — fail the sim loudly if
+    // it doesn't.
+    localparam integer HW_DSTK_DEPTH = 64;
     localparam [10:0] OUT_ADDR = 11'h7F1;
     integer cycles = 0;
     integer peak_dsp = 0;

@@ -1,0 +1,158 @@
+# Ackermann function on the F18A softcore — iterative, RAM-stack.
+#
+# A(m, n) = n+1                    if m == 0
+#        = A(m-1, 1)               if n == 0
+#        = A(m-1, A(m, n-1))       otherwise
+#
+# This is the original iterative form: pending m's go on a software
+# stack in main RAM, pointer kept in A. Slower per iteration than
+# `ackermann.f18a` (the dstk-pending version), but the RAM stack
+# grows unbounded (within free RAM), so this version handles deeper
+# A(m,n) — e.g. A(3, 5) = 253 — that overflow a 64- or 128-deep dstk.
+#
+# Inputs come straight from the port (DB001 §3.3.2 mailbox). At startup
+# the program sets B = INST_PORT and uses three blocking `@b` reads to
+# pull `count`, `n_init`, `m_init` off the host stream — no special
+# memory cells exposed to the host, no W/G/H protocol, just port reads.
+#
+# Working state during the inner loop:
+#   T               = m_curr (current m being processed)
+#   S               = m_init (saved on dstk for restart of each iteration)
+#   dstk[…]         = n_init below S
+#   mem[ctr_cell]   = remaining iterations (decremented every "run")
+#   mem[n_addr]     = working n  (B fixed at n_addr for the inner loop)
+#   A               = m-stack pointer (next free slot, base = mstack_base)
+#   mem[mstack_base..A-1] = pending m values
+#
+# Scratch cells are declared as #variable, so the assembler allocates
+# them at the next free word past the last code cell — no chance of
+# colliding with code, no hand-tuned literal addresses to update when
+# the program grows or shrinks. Cells are implicitly zero on load.
+#
+# When the last iteration emits its result, the program jumps back to
+# INST_PORT (PORT) so the host can stream a fresh program over the
+# same UART link without re-flashing the bitstream — DB001's port-
+# execution semantic acts as a clean re-entry point.
+
+#origin 0x00
+
+#define PORT 0x7F9         # INST_PORT — host stream mailbox
+#define UART_TX 0x7F1      # SoC UART_TX — final result byte
+#define MINUS1 0x3FFFF     # 18-bit -1
+#define ONE 0x01
+
+#variable ctr_cell         # remaining repeat iterations
+#variable n_addr           # working n (B held here through the loop)
+#variable mstack_base      # base of in-RAM pending-m stack; grows upward
+
+start:
+    # B = PORT  (so @b reads consume words from the host stream)
+    @p b!
+    [PORT]
+
+    # count → mem[ctr_cell]
+    @b                             # T = count
+    @p a!
+    [ctr_cell]
+    !                              # mem[A=ctr_cell] = count, T pops.
+
+    # Pull n_init then m_init off the port.
+    @b                             # T = n_init
+    @b                             # T = m_init, S = n_init
+
+    # B = n_addr for the rest of the run (working n cell).
+    @p b!
+    [n_addr]
+
+# start_run:  enter / re-enter for each repeat iteration.
+# Stack on entry: ( n_init m_init )
+start_run:
+    # Working n ← n_init.
+    over !b                        # ( n_init m_init -- n_init m_init )
+                                   #   with mem[B] = n_init
+    # m_curr ← m_init (for this iteration).
+    dup                            # ( n_init m_init m_init )
+
+    # A = m-stack base (empty pending stack).
+    @p a!
+    [mstack_base]
+
+# loop:  T=m_curr,  S=m_init,  dstk has n_init,  mem[B]=n,  A=msp.
+loop:
+    dup if:m_zero                  # if T==0 jump (T not popped)
+    drop                           # ( m m -- m )
+
+    @b if:n_zero                   # if n==0 jump
+    drop                           # ( m n -- m )
+
+    # Both > 0:  push m-1 to RAM stack, n -= 1.
+    dup
+    @p +
+    [MINUS1]
+    !+                             # mem[A] = m-1, A++; T pops back to m
+
+    @b @p +
+    [MINUS1]
+    !b                             # mem[B] = n - 1
+    jump:loop
+
+# m == 0:  drop m, n += 1, pop next pending m off the RAM stack.
+# If the RAM stack is empty, this iteration is done.
+m_zero:
+    drop drop                      # ( m m -- )
+
+    @b @p +
+    [ONE]
+    !b                             # mem[B] = n + 1
+
+    a
+    @p +
+    [-mstack_base]                 # T = A - mstack_base
+    if:done                        # A == base ⇒ no pending m's
+    drop                           # T was non-zero — drop it
+
+    a                              # decrement A: A = A - 1
+    @p +
+    [MINUS1]
+    a!
+    @                              # T = mem[A]  (next pending m)
+    jump:loop
+
+# n == 0:  drop n, n = 1, m -= 1, m_curr stays in T.
+n_zero:
+    drop                           # ( m n -- m )
+
+    @p
+    [ONE]
+    !b                             # mem[B] = 1
+
+    @p +
+    [MINUS1]                       # m -= 1
+    jump:loop
+
+done:
+    drop                           # discard the (A-base) zero
+
+    # Stack: ( n_init m_init )
+    # ctr_cell -= 1; if zero emit, else store back and restart.
+    @p a!
+    [ctr_cell]
+    @ @p +
+    [MINUS1]
+    dup if:emit_result             # if ctr-1 == 0 → emit
+    !                              # mem[ctr_cell] = count - 1, pop
+    drop                           # drop the dup
+    jump:start_run
+
+emit_result:
+    drop drop                      # discard the dup'd zero and the post-dec count
+    @b                             # T = mem[B=n_addr] = final n
+    @p b!
+    [UART_TX]                      # B = UART_TX
+    !b                             # emit the result byte
+
+    # Hand control back to the port so the host can stream a fresh
+    # program over the same UART link. From the F18A's perspective
+    # this is the same situation as power-on (P=PORT), so the next
+    # streamed loader runs exactly like the first one.
+    jump:PORT

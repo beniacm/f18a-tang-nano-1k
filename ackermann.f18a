@@ -1,145 +1,160 @@
-# Ackermann function on the F18A softcore — iterative.
+# Ackermann function on the F18A softcore — iterative, dstk-pending.
 #
 # A(m, n) = n+1                    if m == 0
 #        = A(m-1, 1)               if n == 0
 #        = A(m-1, A(m, n-1))       otherwise
 #
-# Inputs come straight from the port (DB001 §3.3.2 mailbox). At startup
-# the program sets B = INST_PORT and uses three blocking `@b` reads to
-# pull `count`, `n_init`, `m_init` off the host stream — no special
-# memory cells exposed to the host, no W/G/H protocol, just port reads.
+# Iterative form. Pending m's live on the data stack instead of an
+# in-RAM software stack — free now that the BSRAM-backed dstk is 64
+# deep. `A(3, 3)` peaks at ~61 pending m's, fits with room to spare.
+# A sentinel (-1, since m values are small naturals) sits at the
+# bottom of the pending region so the m == 0 path can detect "no
+# more pending" without a separate counter.
 #
 # Working state during the inner loop:
-#   T               = m_curr (current m being processed)
-#   S               = m_init (saved on dstk for restart of each iteration)
-#   dstk[…]         = n_init below S
-#   mem[ctr_cell]   = remaining iterations (decremented every "run")
-#   mem[n_addr]     = working n  (B fixed at n_addr for the inner loop)
-#   A               = m-stack pointer (next free slot, base = mstack_base)
-#   mem[mstack_base..A-1] = pending m values
+#   A                    = m_curr  (pushed onto dstk via the `a` op
+#                          when the loop tests it)
+#   B                    = n_addr  (working n cell, fixed for the loop)
+#   mem[A=n_addr]        = working n
+#   dstk top..down       = pending m's, with SENT (-1) at the bottom
+#   mem[m_init_cell]     = m_init  (constant; reset per iteration)
+#   mem[n_init_cell]     = n_init  (constant; reset per iteration)
+#   mem[ctr_cell]        = remaining iterations
 #
-# Scratch cells are declared as #variable, so the assembler allocates
-# them at the next free word past the last code cell — no chance of
-# colliding with code, no hand-tuned literal addresses to update when
-# the program grows or shrinks. Cells are implicitly zero on load.
+# Holding m_curr in A (not on the stack proper) is what makes this
+# work: pushing a new pending `m-1` is just `a @p + [MINUS1]`, which
+# leaves T = m-1 on top of dstk. No swap, no scratch RAM. Reading
+# m_curr is a single `a` op; updating it (n_zero / m_zero branches)
+# is `a!` after computing the new value.
 #
-# When the last iteration emits its result, the program jumps back to
-# INST_PORT (PORT) so the host can stream a fresh program over the
-# same UART link without re-flashing the bitstream — DB001's port-
-# execution semantic acts as a clean re-entry point.
+# When the last iteration emits its result, the program jumps back
+# to INST_PORT (PORT) so the host can stream a fresh program over
+# the same UART link without re-flashing the bitstream — DB001's
+# port-execution semantic acts as a clean re-entry point.
 
 #origin 0x00
 
 #define PORT 0x7F9         # INST_PORT — host stream mailbox
 #define UART_TX 0x7F1      # SoC UART_TX — final result byte
-#define MINUS1 0x3FFFF     # 18-bit -1
+#define MINUS1 0x3FFFF     # 18-bit -1 (also the sentinel value)
 #define ONE 0x01
 
 #variable ctr_cell         # remaining repeat iterations
 #variable n_addr           # working n (B held here through the loop)
-#variable mstack_base      # base of in-RAM pending-m stack; grows upward
+#variable m_init_cell      # saved m_init for restart
+#variable n_init_cell      # saved n_init for restart
 
 start:
-    # B = PORT  (so @b reads consume words from the host stream)
+    # B = PORT  (so @b reads consume words from the host stream).
     @p b!
     [PORT]
 
-    # count → mem[ctr_cell]
-    @b                             # T = count
-    @p a!
+    # count → mem[ctr_cell].
+    @b @p a!
     [ctr_cell]
-    !                              # mem[A=ctr_cell] = count, T pops.
+    !
 
-    # Pull n_init then m_init off the port.
-    @b                             # T = n_init
-    @b                             # T = m_init, S = n_init
+    # n_init → mem[n_init_cell].
+    @b @p a!
+    [n_init_cell]
+    !
+
+    # m_init → mem[m_init_cell].
+    @b @p a!
+    [m_init_cell]
+    !
 
     # B = n_addr for the rest of the run (working n cell).
     @p b!
     [n_addr]
 
-# start_run:  enter / re-enter for each repeat iteration.
-# Stack on entry: ( n_init m_init )
+    # Push the sentinel onto dstk. It stays at the bottom across all
+    # iterations; each iteration grows pending m's above it.
+    @p . .
+    [MINUS1]
+
+# start_run:  enter / re-enter at the top of each repeat iteration.
+# On entry: dstk = [..., SENT]   (the run before us cleaned up its
+# own pending stack and left SENT on top).
+# B = n_addr; A is whatever the previous iteration left it.
 start_run:
-    # Working n ← n_init.
-    over !b                        # ( n_init m_init -- n_init m_init )
-                                   #   with mem[B] = n_init
-    # m_curr ← m_init (for this iteration).
-    dup                            # ( n_init m_init m_init )
-
-    # A = m-stack base (empty pending stack).
+    # mem[n_addr] = n_init.
     @p a!
-    [mstack_base]
+    [n_init_cell]
+    @                              # T = mem[n_init_cell] = n_init
+    !b                             # mem[B=n_addr] = n_init, T pops
 
-# loop:  T=m_curr,  S=m_init,  dstk has n_init,  mem[B]=n,  A=msp.
+    # A = m_init.
+    @p a!
+    [m_init_cell]
+    @                              # T = m_init
+    a!                             # A = m_init, T pops
+
+# loop:   A=m_curr,  B=n_addr,  dstk = [..., SENT, p1, p2, ..., pK].
 loop:
-    dup if:m_zero                  # if T==0 jump (T not popped)
-    drop                           # ( m m -- m )
+    a if:m_zero                    # T = A = m; if 0 jump (T not popped)
+    drop                           # m != 0 → drop the test copy
 
-    @b if:n_zero                   # if n==0 jump
-    drop                           # ( m n -- m )
+    @b if:n_zero                   # T = mem[B] = n; if 0 jump
+    drop                           # n != 0 → drop the test copy
 
-    # Both > 0:  push m-1 to RAM stack, n -= 1.
-    dup
-    @p +
+    # Both > 0:  push m-1 onto dstk (pending), n -= 1.
+    a @p +                         # T = m-1
     [MINUS1]
-    !+                             # mem[A] = m-1, A++; T pops back to m
+    # T = m-1 stays on top — that *is* the pending push.
 
-    @b @p +
+    @b @p +                        # T = n-1, S = m-1
     [MINUS1]
-    !b                             # mem[B] = n - 1
+    !b                             # mem[B] = n-1; T pops back to m-1
     jump:loop
 
-# m == 0:  drop m, n += 1, pop next pending m off the RAM stack.
-# If the RAM stack is empty, this iteration is done.
+# m == 0:  n += 1, then pop the next pending m off the dstk into A.
+# If the popped value is the sentinel, this iteration is done.
 m_zero:
-    drop drop                      # ( m m -- )
+    drop                           # drop the m=0 test copy
 
-    @b @p +
+    @b @p +                        # T = n + 1
     [ONE]
-    !b                             # mem[B] = n + 1
+    !b                             # mem[B] = n+1; T pops to top pending or SENT
 
-    a
-    @p +
-    [-mstack_base]                 # T = A - mstack_base
-    if:done                        # A == base ⇒ no pending m's
-    drop                           # T was non-zero — drop it
-
-    a                              # decrement A: A = A - 1
-    @p +
-    [MINUS1]
-    a!
-    @                              # T = mem[A]  (next pending m)
+    # Test for sentinel:  T + 1 == 0  iff  T == -1.
+    dup @p +                       # T = top + 1 (and a copy of top below)
+    [ONE]
+    if:done                        # T == 0  ⇒ no more pending → done
+    drop                           # else discard (top+1), keep T = popped m
+    a!                             # A = popped m, T pops
     jump:loop
 
-# n == 0:  drop n, n = 1, m -= 1, m_curr stays in T.
+# n == 0:  n = 1, m -= 1.  Pending dstk untouched.
 n_zero:
-    drop                           # ( m n -- m )
-
-    @p
+    drop                           # drop the n=0 test copy
+    @p . .
     [ONE]
     !b                             # mem[B] = 1
 
-    @p +
-    [MINUS1]                       # m -= 1
+    a @p +                         # T = m - 1
+    [MINUS1]
+    a!                             # A = m-1, T pops
     jump:loop
 
+# done:  the iteration finished.  At this point T = 0 (the sent+1 zero
+# from the comparison) and the dup'd SENT is in S.  The dstk is back
+# to [..., SENT] — the same shape as before this iteration.
 done:
-    drop                           # discard the (A-base) zero
+    drop                           # drop the test zero; T = SENT (the dup'd copy)
 
-    # Stack: ( n_init m_init )
-    # ctr_cell -= 1; if zero emit, else store back and restart.
+    # ctr_cell -= 1; if zero, emit the answer; else restart.
     @p a!
     [ctr_cell]
     @ @p +
     [MINUS1]
     dup if:emit_result             # if ctr-1 == 0 → emit
-    !                              # mem[ctr_cell] = count - 1, pop
+    !                              # else mem[ctr_cell] = ctr-1, T pops
     drop                           # drop the dup
     jump:start_run
 
 emit_result:
-    drop drop                      # discard the dup'd zero and the post-dec count
+    drop drop                      # discard dup'd zero and post-dec count
     @b                             # T = mem[B=n_addr] = final n
     @p b!
     [UART_TX]                      # B = UART_TX
