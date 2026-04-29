@@ -24,7 +24,9 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parents[1]
+TOOLS_DIR = REPO_ROOT / "tools"
+PROGRAMS_DIR = REPO_ROOT / "programs"
 
 TTY = os.environ.get("TTY", "/dev/ttyUSB0")
 BAUD = int(os.environ.get("BAUD", "115200"))
@@ -36,7 +38,7 @@ def asm_to_hex(src: Path) -> list[int]:
     hex_path = "/tmp/fft.hex"
     lst_path = "/tmp/fft.lst"
     subprocess.run(
-        ["python3", str(ROOT / "asm.py"), "-hex", str(src), hex_path, lst_path],
+        ["python3", str(TOOLS_DIR / "asm.py"), "-hex", str(src), hex_path, lst_path],
         check=True,
     )
     raw: list[int] = []
@@ -108,7 +110,7 @@ def main() -> int:
     args = ap.parse_args()
 
     import serial
-    program = asm_to_hex(ROOT / args.prog)
+    program = asm_to_hex(PROGRAMS_DIR / args.prog)
     print(f"compiled {len(program)} words from {args.prog}")
     inputs = make_inputs(args.pattern)
     expected = expected_outputs(inputs, args.algo)

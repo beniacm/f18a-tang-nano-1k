@@ -29,66 +29,66 @@ make f18a.fs                                # build bitstream
 make flash-sram                             # volatile SRAM load
 
 # 2. run something
-python3 port_exec_demo.py                   # streams 12 bytes → emits 'X'
-python3 ack_host.py -m 3 -n 3               # iterative Ackermann
-python3 ga_aforth.py --hw aforth_demo.ga    # ga-tools aforth → "01234\n"
-python3 ga_aforth.py --hw aforth_hue.ga --fire-and-forget   # RGB hue
-python3 fft_host.py                         # 128-word echo round-trip
+python3 tools/port_exec_demo.py                            # streams 12 bytes → emits 'X'
+python3 tools/ack_host.py -m 3 -n 3                        # iterative Ackermann
+python3 tools/ga_aforth.py --hw programs/aforth_demo.ga    # ga-tools aforth → "01234\n"
+python3 tools/ga_aforth.py --hw programs/aforth_hue.ga --fire-and-forget    # RGB hue
+python3 tools/fft_host.py                                  # 128-word echo round-trip
 ```
 
 ## Layout
 
 ```
 .
-├── f18a_core.v          # F18A softcore (18-bit, 4-slot packed ISA, 11-bit addrs)
-├── f18a_soc.v           # SoC: core + UART + INST_PORT byte-assembler + LED/BUTTON
-├── c1_bram.v            # Single-port 18-bit BSRAM
-├── gowin_rpll.v         # Optional rPLL wrapper (build with PLL_FREQ=…)
-├── tang_nano_1k.cst     # Pin constraints
-├── Makefile             # `make f18a.fs`, `make flash-sram`, `make ack`, `make test`
+├── Makefile               # `make f18a.fs`, `make flash-sram`, `make ack`, `make test`
+├── run_tests.sh           # Whole regression in one shot
+├── README.md, NEXT.md, LICENSE
 │
-├── asm.py               # F18A assembler (#define / #variable, slot-3 NOP `.`)
-├── ackermann.f18a       # Iterative Ackermann (pending m's on dstk; A(3,3) at 64 dstk)
-├── ackermann_ram.f18a   # Iterative Ackermann (pending m's in RAM; deeper A(m,n))
-├── lib.f18a             # Helper words / examples
-├── hello.f18a           # "hi\n" UART loop
-├── core1.f18a           # 'B'-spammer
-├── swap_test.f18a       # SWAP via memory scratch
-├── muls_bench.f18a      # MULS microbench
-├── fft_echo.f18a        # Phase-1 FFT crunch test (128-word echo)
-├── examples/            # More small demos (count.f18a)
+├── rtl/                   # All HDL — synth sources + simulation testbenches
+│   ├── f18a_core.v        # F18A softcore (18-bit, 4-slot packed ISA, 11-bit addrs)
+│   ├── f18a_soc.v         # SoC: core + UART + INST_PORT + LED/BUTTON
+│   ├── c1_bram.v          # Single-port 18-bit BSRAM
+│   ├── gowin_rpll.v       # Optional rPLL wrapper (build with PLL_FREQ=…)
+│   ├── tang_nano_1k.cst   # Pin constraints
+│   ├── tb_ack.v           # Ackermann simulation testbench
+│   ├── tb_ops.v           # Per-opcode regression
+│   ├── tb_extarith.v      # Extended-arith (carry / +* edge cases)
+│   ├── tb_muls.v          # Native MULS through the BSRAM path
+│   ├── tb_muls_bench.v    # MULS microbench TB
+│   ├── tb_fullisa_case.v  # Per-instruction semantic harness
+│   └── tb_forth_runtime.v # TB that backs forth_run.run_sim
 │
-├── tb_ack.v             # Ackermann simulation testbench
-├── tb_ops.v             # Per-opcode regression
-├── tb_extarith.v        # Extended-arith (carry / +* edge cases)
-├── tb_muls.v            # Native MULS through the BSRAM path
-├── tb_muls_bench.v      # MULS microbench TB
-├── tb_fullisa_case.v    # Per-instruction semantic harness
-├── tb_forth_runtime.v   # TB that backs forth_run.run_sim
+├── tools/                 # Host-side Python: assembler, compilers, runners
+│   ├── asm.py             # F18A assembler (#define / #variable, slot-3 NOP `.`)
+│   ├── forth_compile.py   # Forth → F18A asm compiler (host side)
+│   ├── forth_run.py       # Sim + hardware back-ends (iverilog + UART)
+│   ├── forth_repl.py      # Interactive Forth REPL
+│   ├── ack_forth.py       # Ackermann benchmark in pure Forth
+│   ├── ga_aforth.py       # Bridge to mschuldt/ga-tools' aforth compiler
+│   ├── ack_host.py        # Host streamer for the Ackermann demo
+│   ├── fft_host.py        # Streams + validates the fft_echo program
+│   ├── port_exec_demo.py  # Tiny "emit X over UART" port-execution demo
+│   ├── bench_ack.py       # Cycle-count comparison: native iter vs aforth
+│   ├── test_forth_compile.py
+│   ├── run_fullisa_cases.py
+│   ├── run_semantic_cases.py
+│   └── run_muls_bench.py
 │
-├── run_tests.sh         # Whole regression in one shot
-├── run_fullisa_cases.py # Array-Forth opcode case images
-├── run_semantic_cases.py# 23 per-instruction semantic checks
-├── run_muls_bench.py    # MULS-bench driver
-├── test_forth_compile.py# Forth → F18A compiler smoke tests
-│
-├── forth_compile.py     # Forth → F18A asm compiler (host side)
-├── forth_run.py         # Sim and hardware back-ends (iverilog + UART)
-├── forth_repl.py        # Interactive Forth REPL
-├── ack_forth.py         # Ackermann benchmark in pure Forth
-│
-├── ga_aforth.py         # Bridge to mschuldt/ga-tools' aforth compiler
-├── aforth_demo.ga       # for/next loop emitting "01234\n"
-├── aforth_ack.ga        # Recursive Ackermann in aforth
-├── aforth_buttons.ga    # Read BUTTON GPIO, mirror to RGB LED
-├── aforth_hue.ga        # RGB-LED hue cycler
-├── bench_ack.py         # Cycle-count comparison: native iter vs aforth
-│
-├── ack_host.py          # Host streamer for the Ackermann demo
-├── port_exec_demo.py    # Tiny "emit X over UART" port-execution demo
-├── fft_host.py          # Streams + validates the fft_echo program
-│
-└── NEXT.md              # Open work / queued ideas
+└── programs/              # On-target sources (.f18a + ga-tools .ga)
+    ├── ackermann.f18a     # Iterative Ackermann (pending m's on dstk; A(3,3) at 64 dstk)
+    ├── ackermann_ram.f18a # Iterative Ackermann (pending m's in RAM; deeper A(m,n))
+    ├── lib.f18a           # Helper words / examples
+    ├── hello.f18a         # "hi\n" UART loop
+    ├── core1.f18a         # 'B'-spammer
+    ├── swap_test.f18a     # SWAP via memory scratch
+    ├── muls_bench.f18a    # MULS microbench
+    ├── fft_echo.f18a      # Phase-1 FFT crunch test (128-word echo)
+    ├── aforth_demo.ga     # for/next loop emitting "01234\n"
+    ├── aforth_ack.ga      # Recursive Ackermann in aforth
+    ├── aforth_buttons.ga  # Read BUTTON GPIO, mirror to RGB LED
+    ├── aforth_hue.ga      # RGB-LED hue cycler
+    ├── examples/          # More small demos (count.f18a)
+    └── tests_array_forth/ # Array-Forth opcode case images
 ```
 
 ## Memory map
@@ -161,7 +161,7 @@ Covers:
 ## Forth REPL (host-compiled)
 
 ```sh
-$ python3 forth_repl.py            # sim by default
+$ python3 tools/forth_repl.py            # sim by default
 forth-on-fpga (Ctrl-D to exit; `.words` lists definitions)
 > : hi 72 emit 105 emit 33 emit 10 emit ;
 ok.
@@ -172,7 +172,7 @@ ok.
 A
 ok.
 
-$ python3 forth_repl.py --hw       # talk to /dev/ttyUSB0
+$ python3 tools/forth_repl.py --hw       # talk to /dev/ttyUSB0
 ```
 
 Each non-definition line is recompiled from scratch (including all `:`
@@ -208,10 +208,10 @@ real-F18A 8-op slot 3 (`; unext @p !p +* + dup .`).
 ```sh
 pip install --user --break-system-packages ga-tools
 make flash-sram
-python3 ga_aforth.py --hw aforth_demo.ga    # → b'01234\n'
-python3 ga_aforth.py --hw aforth_ack.ga     # → b'\x07'  (A(2,2) = 7)
-python3 ga_aforth.py --hw aforth_hue.ga --fire-and-forget    # RGB hue cycle
-python3 ga_aforth.py --hw aforth_buttons.ga --fire-and-forget # mirror BUTTON to LED
+python3 tools/ga_aforth.py --hw programs/aforth_demo.ga    # → b'01234\n'
+python3 tools/ga_aforth.py --hw programs/aforth_ack.ga     # → b'\x07'  (A(2,2) = 7)
+python3 tools/ga_aforth.py --hw programs/aforth_hue.ga --fire-and-forget     # RGB hue cycle
+python3 tools/ga_aforth.py --hw programs/aforth_buttons.ga --fire-and-forget # mirror BUTTON to LED
 ```
 
 `ga_aforth.py` is the bridge: it lets ga-tools parse + slot-pack +
@@ -275,7 +275,7 @@ define addresses by name:
 cell (in declaration order). They never collide with the program, no
 matter how the program grows or shrinks. `#define` constants can be used
 anywhere a literal would go — `[PORT]`, `jump:PORT`, `[-mstack_base]`
-all work. The listing emitted by `python3 asm.py -hex …` surfaces the
+all work. The listing emitted by `python3 tools/asm.py -hex …` surfaces the
 allocated variable addresses so the layout stays auditable:
 
 ```

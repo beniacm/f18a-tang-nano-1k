@@ -23,7 +23,8 @@ from typing import List
 
 import asm
 
-ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parents[1]
+RTL_DIR = REPO_ROOT / "rtl"
 TB_BIN = Path(os.environ.get("TB_FORTH_RUNTIME_BIN", "/tmp/tb_forth_runtime"))
 HEX_PATH = Path("/tmp/forth_run.hex")
 LST_PATH = Path("/tmp/forth_run.lst")
@@ -37,14 +38,14 @@ def ensure_tb_built() -> None:
     """Build the iverilog testbench once and reuse the binary."""
     if TB_BIN.exists():
         # Rebuild if any source it depends on is newer than the binary.
-        deps = [ROOT / "tb_forth_runtime.v", ROOT / "f18a_core.v"]
+        deps = [RTL_DIR / "tb_forth_runtime.v", RTL_DIR / "f18a_core.v"]
         if all(TB_BIN.stat().st_mtime >= dep.stat().st_mtime for dep in deps):
             return
     subprocess.run(
         ["iverilog", "-g2012", "-o", str(TB_BIN),
-         str(ROOT / "tb_forth_runtime.v"),
-         str(ROOT / "f18a_core.v")],
-        cwd=ROOT, check=True,
+         str(RTL_DIR / "tb_forth_runtime.v"),
+         str(RTL_DIR / "f18a_core.v")],
+        cwd=REPO_ROOT, check=True,
     )
 
 

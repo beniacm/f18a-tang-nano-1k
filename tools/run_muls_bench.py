@@ -16,7 +16,9 @@ from pathlib import Path
 
 import asm
 
-ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parents[1]
+RTL_DIR = REPO_ROOT / "rtl"
+PROGRAMS_DIR = REPO_ROOT / "programs"
 HEX = Path("/tmp/muls_bench.hex")
 LST = Path("/tmp/muls_bench.lst")
 
@@ -25,7 +27,7 @@ def build_image() -> None:
     """Assemble muls_bench.f18a into a flat 1K hex image."""
     flat = [0] * 1024
     for src in ("muls_bench.f18a",):
-        origin, words, *_ = asm.assemble_to_words(str(ROOT / src), size=1024)
+        origin, words, *_ = asm.assemble_to_words(str(PROGRAMS_DIR / src), size=1024)
         for i, w in enumerate(words):
             flat[origin + i] = w
     with HEX.open("w") as f:
@@ -37,8 +39,8 @@ def build_image() -> None:
 def run_variant(label: str) -> tuple[int, list[int]]:
     bin_path = Path(f"/tmp/tb_muls_bench_{label}")
     cmd = ["iverilog", "-g2012", "-o", str(bin_path),
-           str(ROOT / "tb_muls_bench.v"), str(ROOT / "f18a_core.v")]
-    subprocess.run(cmd, cwd=ROOT, check=True)
+           str(RTL_DIR / "tb_muls_bench.v"), str(RTL_DIR / "f18a_core.v")]
+    subprocess.run(cmd, check=True)
     proc = subprocess.run([str(bin_path)], capture_output=True, text=True, check=True)
     cycles = None
     out_bytes: list[int] = []

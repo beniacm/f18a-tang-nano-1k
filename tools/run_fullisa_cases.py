@@ -5,7 +5,9 @@ from pathlib import Path
 
 import asm
 
-ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parents[1]
+RTL_DIR = REPO_ROOT / "rtl"
+PROGRAMS_DIR = REPO_ROOT / "programs"
 MEM_SIZE = 1024
 TB_BIN = Path("/tmp/tb_fullisa_case")
 CASE_HEX = Path("/tmp/current_case.hex")
@@ -35,17 +37,16 @@ def build_tb() -> None:
             "-DFULLISA",
             "-o",
             str(TB_BIN),
-            "tb_fullisa_case.v",
-            "c1_bram.v",
-            "f18a_core.v",
+            str(RTL_DIR / "tb_fullisa_case.v"),
+            str(RTL_DIR / "c1_bram.v"),
+            str(RTL_DIR / "f18a_core.v"),
         ],
-        cwd=ROOT,
         check=True,
     )
 
 
 def run_case(case_rel: str, expect_byte: int) -> None:
-    case_path = ROOT / case_rel
+    case_path = PROGRAMS_DIR / case_rel
     combine_image(case_path)
     proc = subprocess.run([str(TB_BIN)], capture_output=True, text=True, check=True)
     match = re.search(r"EMIT 0x([0-9a-fA-F]{2})", proc.stdout)
