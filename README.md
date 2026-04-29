@@ -48,7 +48,8 @@ python3 fft_host.py                         # 128-word echo round-trip
 ├── Makefile             # `make f18a.fs`, `make flash-sram`, `make ack`, `make test`
 │
 ├── asm.py               # F18A assembler (#define / #variable, slot-3 NOP `.`)
-├── ackermann.f18a       # Iterative Ackermann demo program
+├── ackermann.f18a       # Iterative Ackermann (pending m's on dstk; A(3,3) at 64 dstk)
+├── ackermann_ram.f18a   # Iterative Ackermann (pending m's in RAM; deeper A(m,n))
 ├── lib.f18a             # Helper words / examples
 ├── hello.f18a           # "hi\n" UART loop
 ├── core1.f18a           # 'B'-spammer
@@ -226,6 +227,13 @@ each program returns to INST_PORT after its main word, matching how
 `ackermann.f18a` (iterative, hand-asm) and `aforth_ack.ga`
 (recursive, via ga-tools). Recursive aforth is consistently
 1.7×–2.3× faster, at the cost of much deeper hardware stacks.
+
+Two iterative variants ship: `ackermann.f18a` keeps pending m's on
+the BSRAM-backed dstk (no RAM access in the inner loop, ~25 % fewer
+cycles, capped at A(3,3) on the 64-deep default — A(3,4) needs
+`make f18a.fs DSTK_DEPTH=128`). `ackermann_ram.f18a` is the original
+software-stack-in-RAM form, slower per iter but the stack grows
+unbounded inside the 1 K BSRAM, so A(3,5) and beyond fit.
 
 ## Streaming-port protocol (boot loader)
 
