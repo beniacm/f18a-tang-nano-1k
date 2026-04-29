@@ -48,6 +48,8 @@ module f18a_core #(
     parameter DSP_BITS   = 4,            // ceil(log2(DSTK_DEPTH))
     parameter RSTK_DEPTH = 16,           // return stack depth; 16 at synth was the GA144 default
     parameter RSP_BITS   = 4,            // ceil(log2(RSTK_DEPTH))
+    parameter NTASKS     = 4,            // GA144-style cooperative multitasking
+    parameter TASK_BITS  = 2,            // ceil(log2(NTASKS))
     parameter [ADDR_BITS-1:0] RESET_PC = 0,
     parameter [ADDR_BITS-1:0] MULS_HANDLER_ADDR = 'h3E0,  // only used when MULS_TRAP is defined
     // Address of the GA144-style "comm port" used for port execution
@@ -172,12 +174,25 @@ module f18a_core #(
     // Stacks live in BSRAM. The block-RAM pragma steers yosys away from
     // distributed-LUT inference; pre-fetched reads + write-through
     // forwarding hide the synchronous-read latency.
-    (* ram_style = "block" *) reg [17:0] dstk [0:DSTK_DEPTH-1];
-    (* ram_style = "block" *) reg [17:0] rstk [0:RSTK_DEPTH-1];
+    //
+    // For NTASKS-way cooperative multitasking each task gets its own
+    // DSTK_DEPTH-deep slice; the running_task register selects which
+    // slice the active execution sees. With NTASKS=4 and DSTK_DEPTH=64
+    // the array is 256 cells — fits in half of one Gowin BSRAM at the
+    // 18-bit width. RSTK_DEPTH=128 → 512 cells, fills one BSRAM.
+    (* ram_style = "block" *) reg [17:0] dstk [0:NTASKS*DSTK_DEPTH-1];
+    (* ram_style = "block" *) reg [17:0] rstk [0:NTASKS*RSTK_DEPTH-1];
     reg [17:0] dstk_rdata;
     reg [17:0] rstk_rdata;
     reg [DSP_BITS-1:0] dsp;
     reg [RSP_BITS-1:0] rsp;
+
+    // Active task index. Phase-1 plumbing only — running_task stays at
+    // 0 unless explicitly switched (auto-switch on port-block lands in
+    // a follow-up commit, see NEXT.md). Single-task behaviour is
+    // therefore unchanged: every existing test passes with running_task
+    // hard-pinned to 0.
+    reg [TASK_BITS-1:0] running_task = {TASK_BITS{1'b0}};
 
     localparam [DSP_BITS-1:0] DSP_ZERO = {DSP_BITS{1'b0}};
     localparam [DSP_BITS-1:0] DSP_ONE  = {{(DSP_BITS-1){1'b0}}, 1'b1};
@@ -333,15 +348,19 @@ module f18a_core #(
     // next state is ST_FETCH (slot 3 done, mem op done, etc.) dsp may
     // not change for several cycles — the read just keeps re-reading
     // the same addr, which is harmless and keeps dstk_rdata stable.
-    wire [DSP_BITS-1:0] dstk_raddr = next_dsp - DSP_ONE;
-    wire [RSP_BITS-1:0] rstk_raddr = next_rsp - RSP_ONE;
+    //
+    // Multitask: prepend running_task as the high bits so each task's
+    // slice is disjoint in the BSRAM. Single-task config (NTASKS=1)
+    // collapses to TASK_BITS=0 and the task prefix vanishes.
+    wire [TASK_BITS+DSP_BITS-1:0] dstk_raddr = {running_task, next_dsp - DSP_ONE};
+    wire [TASK_BITS+RSP_BITS-1:0] rstk_raddr = {running_task, next_rsp - RSP_ONE};
 
     // dstk push wdata is always S (the value getting demoted). rstk push
     // wdata is always R. waddr is the current pointer (next-free slot).
-    wire [DSP_BITS-1:0] dstk_waddr = dsp;
-    wire [RSP_BITS-1:0] rstk_waddr = rsp;
-    wire [17:0]         dstk_wdata = S;
-    wire [17:0]         rstk_wdata = R;
+    wire [TASK_BITS+DSP_BITS-1:0] dstk_waddr = {running_task, dsp};
+    wire [TASK_BITS+RSP_BITS-1:0] rstk_waddr = {running_task, rsp};
+    wire [17:0]                   dstk_wdata = S;
+    wire [17:0]                   rstk_wdata = R;
 
     // BSRAM blocks. Synchronous read with explicit write-through
     // forwarding: when waddr == raddr in the same cycle (push followed
