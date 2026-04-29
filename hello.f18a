@@ -1,0 +1,16 @@
+# Stream the bytes of "hi\n" to the host, forever.
+#   UART_TX = 0x7F1  (core-1 view)
+#origin 0x00
+
+start:
+    @p b!               # B ← mbox_out addr
+    [0x7F1]
+
+loop:
+    @p !b               # mbox_out ← 'h'
+    [0x68]
+    @p !b               # mbox_out ← 'i'
+    [0x69]
+    @p !b               # mbox_out ← '\n'
+    [0x0A]
+    jump:loop

@@ -1,0 +1,55 @@
+# lib.f18a — legacy helper code kept around as reference / experiments.
+#
+# CURRENT HANDLERS:
+#
+#   _muls @ 0x3E0  — invoked by hardware MULS trap on every `+*`.
+#                    Replicates one bit of unsigned 18-bit multiply:
+#                       pre   = (A & 1) ? T + S : T
+#                       new T = pre >> 1   (bit 17 = 0)
+#                       new A = (pre[0] << 17) | (A >> 1)
+#                    Stack/dsp unchanged. ~30 cycles vs. 1 for native +*.
+#
+# Layout note. The current hardware trap is a plain CALL to _muls, not a
+# slot-aware resume. That means `+*` must live in slot 0 of its word; on
+# return, execution resumes at the next fetched word. Inside the handler
+# rsp ≥ 1, so a slot-3 ret in an intermediate word would return early.
+# Body words therefore branch in slot 0/1/2 (which sets st <= ST_FETCH
+# and skips slot 3). Only the FINAL word of each path ends with `;`.
+#
+# All branches stay within an 8-word block (slot-2 jmp's 3-bit addr
+# range), or use slot-1 jmp (8-bit addr) when crossing blocks. The
+# carry/no-carry tails end with `slot 0/1/2 op + slot 3 ret` so we
+# don't need a shared finalT step — eliminating a cross-block jump.
+
+#origin 0x3E0
+
+# ── _muls (entry) ────────────────────────────────────────────────
+_muls:
+    a @p jump:_muls_w1                     # @p reads literal at next word
+[1]
+_muls_w1:
+    and if:_muls_no_add                    # if (A&1)==0 → no add
+    drop jump:_muls_add_p2                 # add path: drop the (A&1)=1
+_muls_add_p2:
+    over + jump:_muls_post_pre             # T = T + S, S preserved
+_muls_no_add:
+    drop jump:_muls_post_pre               # no-add path: drop the (A&1)=0
+
+_muls_post_pre:                            # ( S pre ) — pre = T or T+S
+    dup @p jump:_muls_w7                   # split pre&1 test
+[1]
+_muls_w7:
+    and if:_muls_no_carry                  # if (pre&1)==0 → no carry
+    drop jump:_muls_carry                  # drop the (pre&1)=1
+
+_muls_carry:                               # bit 17 of newA must be set
+    a 2/ jump:_muls_carry_p2               # T = A >> 1
+_muls_carry_p2:
+    @p + jump:_muls_carry_p3               # T = (A>>1) + 0x20000   (OR via ADD)
+[0x20000]
+_muls_carry_p3:
+    a! 2/ ;                                # all 4 slots: a!, 2/, nop, ret  (single word)
+_muls_no_carry:
+    drop 2/ jump:_muls_no_carry_p2         # pop pre&1=0 ; T = pre >> 1 = newT
+_muls_no_carry_p2:
+    a 2/ a! ;                              # ( newT -- newT ); A = (Aold>>1) = newA

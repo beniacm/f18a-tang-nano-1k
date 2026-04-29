@@ -1,0 +1,32 @@
+# case_unext: exercise slot-3 `unext` directly and emit a single
+# pass/fail byte.
+#
+# Load R with 2 and A with 0, then execute
+#   @+ . . unext
+# which should repeat the word 3 times total, auto-incrementing A each
+# time. We then drop the three fetched junk cells and check A == 3.
+# Emit 'P' if so, else 'F'.
+
+#origin 0x000
+
+start:
+    @p b!
+    [0x1E1]
+    @p a!
+    [0]
+    @p push jump:loop
+    [2]
+loop:
+    @+ . . unext
+    drop drop drop
+    a @p xor
+    [3]
+    if:pass
+    drop @p !b
+    [0x46]
+    jump:halt
+pass:
+    drop @p !b
+    [0x50]
+halt:
+    jump:halt

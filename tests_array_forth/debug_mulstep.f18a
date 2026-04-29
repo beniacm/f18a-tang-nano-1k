@@ -1,0 +1,18 @@
+# Diagnostic: emit T (low 8 bits) after native +* on the
+# case_multiplyStepOdd setup. Expected: 0x05.
+#origin 0x000
+
+start:
+    @p b!
+    [0x1E1]
+    @p
+    [10]
+    @p
+    [0]
+    @p
+    [11]
+    a!
+    +*
+    !b                             # emit low 8 bits of T
+halt:
+    jump:halt

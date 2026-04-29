@@ -1,0 +1,43 @@
+# case_multiplyStepOdd: "@p @p @p . 10 0 11 a! +* . ."  →  T=5, S=10, A=5
+# Exercises native +*.
+
+#origin 0x000
+
+start:
+    @p b!
+    [0x1E1]
+    @p
+    [10]                           # ( 10 )
+    @p
+    [0]                            # ( 10 0 )
+    @p
+    [11]                           # ( 10 0 11 )
+    a!                             # A=11 ; ( 10 0 )
+    +*                             # expect T=5, A=5
+    @p xor                         # T == 5 ?
+    [5]
+    if:T_ok
+    drop @p !b
+    [0x46]
+    jump:halt
+T_ok:
+    drop                           # ( 10 )
+    @p xor                         # S was below T; after drop, T = (was 10)
+    [10]
+    if:S_ok
+    drop @p !b
+    [0x46]
+    jump:halt
+S_ok:
+    drop                           # clear stack
+    a @p xor                       # A == 5 ?
+    [5]
+    if:pass
+    drop @p !b
+    [0x46]
+    jump:halt
+pass:
+    drop @p !b
+    [0x50]
+halt:
+    jump:halt

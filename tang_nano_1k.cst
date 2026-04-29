@@ -1,0 +1,40 @@
+// Tang Nano 1K constraints for the F18A SoC
+// Board: Sipeed Tang Nano 1K (GW1NZ-LV1 QN48, with BL616 USB bridge)
+
+// 27 MHz oscillator
+IO_LOC  "clk" 47;
+IO_PORT "clk" IO_TYPE=LVCMOS33;
+
+// Onboard RGB LED (common anode → active-low outside, SoC inverts internally)
+IO_LOC  "led_r" 9;
+IO_PORT "led_r" IO_TYPE=LVCMOS33 DRIVE=8;
+
+IO_LOC  "led_g" 11;
+IO_PORT "led_g" IO_TYPE=LVCMOS33 DRIVE=8;
+
+IO_LOC  "led_b" 10;
+IO_PORT "led_b" IO_TYPE=LVCMOS33 DRIVE=8;
+
+// External FTDI USB-UART adapter (onboard BL702 UART pins are not routed
+// to the FPGA on the Tang Nano 1K — see earlier schematic investigation).
+// Wires: FTDI TXD → FPGA pin 27 (uart_rx), FPGA pin 28 (uart_tx) → FTDI
+// RXD. (Pin 27 was once suspected damaged but the real cause was an RX
+// FSM re-arm race; fixed in f18a_soc.v — see UART_REPORT.md.)
+IO_LOC  "uart_tx" 28;
+IO_PORT "uart_tx" IO_TYPE=LVCMOS33 DRIVE=8;
+IO_LOC  "uart_rx" 27;
+IO_PORT "uart_rx" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+
+// On-board user buttons (Sipeed Tang Nano 1K — verified against the
+// example_lcd CST in TangNano-1K-examples):
+//   pin 13 = KEY  → button A (the silkscreened user button)
+//   pin 44 = nRST → button B (the second front-panel button; doubles
+//                              as the FPGA configuration nReset, but
+//                              is exposed as a regular GPIO when the
+//                              user logic uses it). Active-low; the
+//                              internal pull-up holds the unpressed
+//                              level.
+IO_LOC  "button_a" 13;
+IO_PORT "button_a" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "button_b" 44;
+IO_PORT "button_b" IO_TYPE=LVCMOS33 PULL_MODE=UP;

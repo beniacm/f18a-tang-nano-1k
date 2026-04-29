@@ -1,0 +1,23 @@
+# Build artifacts
+*.fs
+*.json
+*.pnr
+firmware_init.vh
+firmware.lst
+
+# Sim dumps
+*.vcd
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / OS
+*.swp
+*.swo
+.DS_Store
+*~
+
+# Temp build outputs
+/tmp/*

@@ -1,0 +1,52 @@
+# swap_test.f18a — proof-of-concept that CALL/RET work end-to-end on
+# the BSRAM SoC, plus a software implementation of a "missing" op.
+#
+# F18A doesn't have SWAP. The canonical idiom is `push <something> pop`,
+# which uses the rstk and isn't available in our build (POP/PUSH are
+# the two ops that genuinely can't be emulated in this tiny demo).
+# But SWAP can be done via memory: !b parks T in a scratch cell, a!
+# parks the new T in A, @b reloads the parked value, `a` pushes A back.
+#
+# Without swap working, the test below would emit the top of stack
+# unchanged (0x0B = 11). With swap working, the order flips and we
+# emit 0x07 (= 7) — that single byte is the test's verdict.
+#
+# Layout:
+#   0x10  : scratch cell used by _swap
+#   0x7F1 : UART_TX (visible on UART)
+#
+# The slot-3 packing constraint inside a CALL'd function:
+#   - Slot 3 is one of {ret, ex, unext}.
+#   - rsp>0 inside _swap, so slot-3 ret returns mid-function — bad.
+#   - Solution: every body memory word ends with an explicit branch in
+#     slot 0/1/2 (which sets st<=ST_FETCH and skips slot 3). The final
+#     word ends with ret in slot 3 as the natural function exit.
+#
+# _swap (4 user ops) packs into 2 memory words:
+#   word 1 : !b a! jump:_swap_2    (slot 2 jump + 3-bit addr; same
+#                                    8-word block as _swap_2)
+#   word 2 : @b a ;                (final, slot-3 ret = function exit)
+
+#origin 0x00
+
+start:
+    @p b!                          # B = 0x10 (swap's scratch cell)
+    [0x10]
+    @p                             # push 7
+    [0x07]
+    @p                             # push 11
+    [0x0B]
+    call:_swap                     # ( 7 11 -- 11 7 )
+
+    @p b!                          # B = mbox_out
+    [0x7F1]
+    !b                             # emit T  →  0x07 if swap worked
+halt:
+    jump:halt
+
+
+_swap:                             # ( a b -- b a ); B is scratch-cell ptr
+    !b a! jump:_swap_2             # mem[B] = b ; A = a
+_swap_2:
+    @b a                           # T = mem[B] = b ; push A=a on top
+    ;

@@ -1,0 +1,59 @@
+\ Recursive Ackermann in aforth, compiled by ga-tools and re-packed
+\ for this softcore via ga_aforth.py.
+\
+\ A(m, n) = n+1                    if m == 0
+\         = A(m-1, 1)              if n == 0
+\         = A(m-1, A(m, n-1))      otherwise
+\
+\ Helpers:
+\   `nip` ( a b -- b ): rstk round-trip via push/drop/pop. Net effect
+\        is removal of the second-from-top while preserving everything
+\        underneath.
+\   `swap` ( a b -- b a ): one-cell memory scratch at 0x80. The dstk
+\        briefly underflows by 2 cells while the swap is in flight, but
+\        the values come back in correct order — same trick our hand-
+\        written forth_compile uses.
+\
+\ Branching uses `if: label`: a slot-aligned conditional jump. At rsp
+\ != 0 the `;` ending the target definition unwinds back to the caller
+\ of `ack`, so each label doubles as an early-return arm.
+
+node 0
+
+: _start main ;                \ trampoline at 0x000 → main
+
+\ swap ( a b -- b a ) — uses 0x80 as scratch
+: swap
+    0x80 b!
+    !b a!
+    @b a ;
+
+\ nip ( a b -- b )
+: nip push drop pop ;
+
+\ A(0, n) = n+1.  Stack at entry: ( m n m_dup=0 ), T = 0.
+: m_zero
+    drop nip
+    1 + ;
+
+\ A(m, 0) = A(m-1, 1).  Stack at entry: ( m n=0 n_dup=0 ), T = 0.
+: n_zero
+    drop drop                  \ ( m )
+    -1 +                       \ ( m-1 )
+    1 ack ;                    \ ( m-1 1 ); tail-call ack
+
+\ A(m, n) — ( m n -- result )
+: ack
+    over if: m_zero            \ ( m n m_dup ); if 0 → m_zero
+    drop                       \ ( m n )
+    dup if: n_zero             \ ( m n n_dup ); if 0 → n_zero
+    drop                       \ ( m n )
+    over -1 + push             \ ( m n m-1 ); R=m-1, stack: ( m n )
+    -1 + ack                   \ ack(m, n-1) → ( m, A(m, n-1) )
+    nip                        \ ( A(m, n-1) ); drop the m
+    pop swap ack ;             \ ( A m-1 ) → swap → ( m-1 A ); tail-call ack
+
+\ Compute A(2, 2) = 7
+: main
+    2 2 ack
+    0x7F1 b! !b ;

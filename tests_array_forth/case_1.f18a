@@ -1,0 +1,23 @@
+# case_1: "@p @p . + 2 3"  →  T=5
+# Emit 'P' if T==5 after +, else 'F'.
+#origin 0x000
+
+start:
+    @p b!
+    [0x1E1]
+    @p
+    [2]
+    @p
+    [3]
+    +
+    @p xor
+    [5]
+    if:pass
+    drop @p !b
+    [0x46]
+    jump:halt
+pass:
+    drop @p !b
+    [0x50]
+halt:
+    jump:halt

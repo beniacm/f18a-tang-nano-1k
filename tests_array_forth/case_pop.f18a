@@ -1,0 +1,24 @@
+# case_pop: pop semantics — after `call X`, R holds the return PC;
+# `pop` then pulls that into T. The Haskell test laid this out as
+# call→pad→pop and asserted T=1; we replicate semantically: call to a
+# label that's the next instruction, pop reads R, we check T equals
+# the label's address.
+#origin 0x000
+
+start:
+    @p b!
+    [0x1E1]
+    call:after                     # rsp=1, R=after's address
+after:
+    pop                            # T <- R = address of `after` label
+    @p xor                         # T XOR after_addr → 0 if pop worked
+    [after]
+    if:pass
+    drop @p !b
+    [0x46]
+    jump:halt
+pass:
+    drop @p !b
+    [0x50]
+halt:
+    jump:halt

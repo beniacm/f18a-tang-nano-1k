@@ -1,0 +1,29 @@
+\ Read button A → drive the red LED.
+\
+\   button A pressed   → red LED on
+\   button A released  → all LEDs off
+\
+\ Button B is wired as a hardware soft-reset (see f18a_soc.v): pressing
+\ it sends the F18A back to RESET_PC=0x7F9 (INST_PORT), at which point
+\ the host can stream a fresh program with `python3 ga_aforth.py --hw
+\ <something.ga> --fire-and-forget` — no re-flash needed.
+\
+\ Buttons live at 0x7F4 (read-only): bit 0 = A pressed.
+\ LED register at 0x7F3 (write): bit 0 = R, bit 1 = G, bit 2 = B.
+\
+\ Mapping is the identity on bit 0 — copy `mem[0x7F4]` straight into
+\ `mem[0x7F3]` and the red LED follows the button.
+
+node 0
+
+: _start main ;
+
+: main
+    0x7F4 a!               \ A = button reg (read via @)
+    0x7F3 b!               \ B = LED reg   (write via !b)
+    main_loop ;
+
+: main_loop
+    @                      \ T = mem[A] = button state (0 or 1)
+    !b                     \ store T to mem[B] = LED reg
+    main_loop ;

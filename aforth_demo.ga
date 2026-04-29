@@ -1,0 +1,19 @@
+\ aforth demo: emit '0' '1' '2' '3' '4' followed by '\n'.
+\
+\ Compiled by ga-tools (https://github.com/mschuldt/ga-tools), then
+\ re-packed for this softcore by ga_aforth.py and streamed to the
+\ FPGA's INST_PORT. With the slot-3 decoder upgrade in f18a_core.v
+\ (8 ops: ; unext @p !p +* + dup .), ga-tools' for/next loop drops
+\ in unmodified — `push` lands wherever ga-tools wants and the
+\ surrounding word's slot-3 NOP `.` is now a real no-op.
+
+node 0
+: main
+    0x7F1 b!             \ B = UART_TX
+    48                   \ T = '0'
+    4 for                \ 5 iterations
+        dup !b           \ emit current T
+        1 . +            \ T += 1
+    next
+    drop                 \ discard the spent count
+    0x7F1 b!  10 !b      \ emit '\n'

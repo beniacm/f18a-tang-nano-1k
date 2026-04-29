@@ -1,0 +1,78 @@
+# Phase 1 of the FFT crunch test: round-trip echo.
+#
+# Host streams 128 18-bit words via INST_PORT.
+# Program reads them into RAM at 0x100..0x17F, then re-streams each
+# back as 3 UART_TX bytes (lo, mid, hi[1:0]) — total 384 bytes out.
+# Program returns control to INST_PORT for the next stream.
+#
+# F18A slot-3 trap: any word reached at rsp != 0 with an implicit
+# slot-3 `;` will pop R into P unexpectedly. Inside `for ... next` /
+# `for ... unext` loops, and inside any called subroutine, every
+# instruction word that's not the final RET must have an explicit
+# `.` (NOP) in slot 3.
+
+#origin 0x000
+
+#define INST_PORT  0x7F9
+#define UART_TX    0x7F1
+#define BUF_BASE   0x100
+#define BUF_LAST   127
+#define BYTE_MASK  0xFF
+#define HI_MASK    0x03
+#define SHIFT_LAST 7
+
+start:
+    @p b!
+    [INST_PORT]
+    @p a!
+    [BUF_BASE]
+    @p push . .
+    [BUF_LAST]
+
+read_loop:
+    @b !+ . .                   # rsp=1; slot 3 must be NOP
+    next:read_loop
+
+    @p b!
+    [UART_TX]
+    @p a!
+    [BUF_BASE]
+    @p push . .
+    [BUF_LAST]
+
+emit_loop:
+    @+ . . .                    # rsp=1
+    call:emit_word
+    next:emit_loop
+
+    jump:INST_PORT
+
+
+# emit_word ( w -- ) — emit w as 3 UART_TX bytes.
+# Called from emit_loop (rsp=2 inside this body).
+emit_word:
+    dup . . .
+    @p and . .
+    [BYTE_MASK]
+    !b . . .
+
+    call:shift8
+
+    dup . . .
+    @p and . .
+    [BYTE_MASK]
+    !b . . .
+
+    call:shift8
+
+    @p and . .
+    [HI_MASK]
+    !b . . ;
+
+
+# shift8 ( w -- w>>8 ) — arithmetic right shift via tight unext.
+shift8:
+    @p push . .
+    [SHIFT_LAST]
+    2/ . . unext                # unext in slot 3 — slot-3 OK
+    . . . ;

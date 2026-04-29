@@ -1,0 +1,48 @@
+\ Hue-cycle demo for the Tang Nano 1K's RGB LED.
+\
+\ Compiled by ga-tools and re-packed by ga_aforth.py. Drives the
+\ memory-mapped LED register at 0x7F3 through the standard 6-color
+\ hue cycle:
+\
+\   R       (bit 0)
+\   R + G   yellow
+\   G       (bit 1)
+\   G + B   cyan
+\   B       (bit 2)
+\   R + B   magenta
+\
+\ Each step holds for ~250 ms at 27 MHz via two nested for/next loops:
+\ outer = 6, inner = 0x3FFFF. Each inner unext loop is ~1 M cycles
+\ (262 K iters × 4 sys-clk cycles per fetch+exec round-trip), and the
+\ outer × 7 ≈ 7 M cycles ≈ 260 ms wall-clock per step. Six colours
+\ make a full hue rotation in ~1.6 s.
+
+node 0
+
+: _start main ;
+
+\ Set B = LED register (0x7F3) for the cycle.
+: led-init  0x7F3 b! ;
+
+\ Write current T as the next colour.
+: led       !b ;
+
+\ Two-deep delay: outer=6, inner=0x3FFFF.
+: delay
+    6 for
+        0x3FFFF for unext
+    next ;
+
+\ One full hue rotation.
+: spin
+    1 led delay      \ red
+    3 led delay      \ red + green = yellow
+    2 led delay      \ green
+    6 led delay      \ green + blue = cyan
+    4 led delay      \ blue
+    5 led delay      \ red + blue = magenta
+    spin ;
+
+: main
+    led-init
+    spin ;

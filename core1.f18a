@@ -1,0 +1,14 @@
+# Core-1 payload program for step-3 test: continuously write 'B' (0x42)
+# to our UART TX register (core-1 view: 0x7F1 = UART_TX).  Core 0 will
+# read those bytes via its mailbox and ship them to UART.
+
+#origin 0x00
+
+start:
+    @p b!            # B ← 0x7F1 (UART_TX)
+    [0x7F1]
+
+loop:
+    @p !b            # UART_TX ← 0x42
+    [0x42]
+    jump:loop

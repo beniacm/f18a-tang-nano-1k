@@ -1,0 +1,34 @@
+#  Emit the digits '0'..'9' then a newline, forever.
+#  Unrolled because F18A has no direct "compare-greater"; loops of fixed
+#  length are the clean way.
+
+#origin 0x00
+
+start:
+    @p b!
+    [0x3F1]                 # B ← UART_TX
+
+loop:
+    @p !b
+    [0x30]                  # '0'
+    @p !b
+    [0x31]
+    @p !b
+    [0x32]
+    @p !b
+    [0x33]
+    @p !b
+    [0x34]
+    @p !b
+    [0x35]
+    @p !b
+    [0x36]
+    @p !b
+    [0x37]
+    @p !b
+    [0x38]
+    @p !b
+    [0x39]                  # '9'
+    @p !b
+    [0x0A]                  # '\n'
+    jump:loop

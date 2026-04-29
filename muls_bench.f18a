@@ -1,0 +1,61 @@
+# muls_bench.f18a — unsigned 16x16 multiply, hand-asm.
+#
+# Setup: T=0 (accumulator), S=multiplicand m, A=multiplier n.
+# Each `+*`:
+#   pre  = (A&1) ? T+S : T      \ conditional add of multiplicand
+#   newT = pre >> 1             \ accumulator drifts right
+#   newA = (pre[0] << 17) | (A >> 1)
+#                               \ multiplier shifts right; product bits
+#                               \  accumulate from the top of A.
+# After 16 steps T:A holds the 32-bit unsigned product.
+#
+# Each `+*` lives in slot 0 of its own word so the benchmark still mirrors
+# the classic F18A coding style for multiply-step loops.
+#
+# The program writes T's low byte to UART_TX (so a host can sanity-check
+# the result against m*n on hardware) and then writes the magic cookie 1
+# to RAM[0x77E] — the testbench `tb_muls_bench.v` watches for that
+# write to record the total cycle count.
+
+#origin 0x000
+
+start:
+    @p                          # T = m (multiplicand)
+    [0xABCD]
+    @p a!                       # A = n (multiplier); T = m
+    [0x1234]
+    @p                          # T = 0 (acc); S = m
+    [0]
+
+    +*
+    +*
+    +*
+    +*
+    +*
+    +*
+    +*
+    +*
+    +*
+    +*
+    +*
+    +*
+    +*
+    +*
+    +*
+    +*
+
+    # T now has product[33:18] (acc shifted right 16 times — top bits of
+    # the 18-bit accumulator); A has product[15:0] in its high portion.
+    # We just emit T's low byte as a sanity beacon and stop.
+    @p b!
+    [0x7F1]
+    !b
+
+    # Done marker for tb_muls_bench.v
+    @p a!
+    [0x77E]
+    @p !
+    [1]
+
+halt:
+    jump:halt
