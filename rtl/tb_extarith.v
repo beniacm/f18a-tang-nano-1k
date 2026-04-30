@@ -10,6 +10,7 @@ module tb_extarith;
         OP_SHL  = 5'o21,
         OP_SHR  = 5'o22,
         OP_ADD  = 5'o24,
+        OP_XOR  = 5'o26,
         OP_NOP  = 5'o34,
         OP_ASTO = 5'o37;
 
@@ -221,6 +222,52 @@ module tb_extarith;
         // new carry = old LSB = 1
         assert_eq18("SHR ext (RCR): T",     dbg_T,    18'h36000);
         assert_eq1 ("SHR ext (RCR): carry", cpu.carry, 1'b1);
+
+        // ── Plain XOR is bitwise XOR (no carry interaction) ──────────
+        clear_mem;
+        mem[0] = pack4(OP_FETP, OP_FETP, OP_XOR, OP_RET);
+        mem[1] = 18'h2C0F0;
+        mem[2] = 18'h0FFFF;
+        mem[3] = pack4(OP_NOP, OP_NOP, OP_NOP, OP_RET);
+        reset_cpu;
+        cpu.carry = 1'b1;
+        run_until_p(10'h004, 80);
+        // T_in = mem[2] = 0x0FFFF, S = mem[1] = 0x2C0F0
+        // expect T_out = 0x2C0F0 ^ 0x0FFFF = 0x23F0F
+        assert_eq18("XOR normal: T",      dbg_T, 18'h23F0F);
+        assert_eq1 ("XOR normal: carry unchanged", cpu.carry, 1'b1);
+
+        // ── P9 XOR = subtract-with-borrow ────────────────────────────
+        // T - S - carry_in (= borrow); carry_out = 1 if borrow.
+        // Pre-clear carry → straight subtract.
+        clear_mem;
+        mem[0]       = br0(OP_JMP, 10'h200);
+        mem[10'h200] = pack4(OP_FETP, OP_FETP, OP_XOR, OP_RET);
+        mem[10'h201] = 18'd5;       // S (loaded first, lands in S)
+        mem[10'h202] = 18'd12;      // T (top: subtrahend? no, minuend on T)
+        mem[10'h203] = pack4(OP_NOP, OP_NOP, OP_NOP, OP_RET);
+        // Stack semantics for `-`: ( a b -- a-b ). Here S=5 (a), T=12 (b)?
+        // Wait: @p loads literal as new T, pushes prev T to S.
+        // Sequence: @p [5] → T=5. @p [12] → T=12, S=5.
+        // XOR (P9 = sub): T_new = T - S - 0 = 12 - 5 = 7.
+        reset_cpu;
+        cpu.carry = 1'b0;
+        run_until_p(10'h204, 100);
+        assert_eq18("XOR ext (SUB): 12-5", dbg_T, 18'd7);
+        assert_eq1 ("XOR ext (SUB): no borrow", cpu.carry, 1'b0);
+
+        // ── P9 XOR with borrow: 5 - 12 - 0 = -7 (= 0x3FFF9), borrow=1 ──
+        clear_mem;
+        mem[0]       = br0(OP_JMP, 10'h200);
+        mem[10'h200] = pack4(OP_FETP, OP_FETP, OP_XOR, OP_RET);
+        mem[10'h201] = 18'd12;      // S
+        mem[10'h202] = 18'd5;       // T
+        mem[10'h203] = pack4(OP_NOP, OP_NOP, OP_NOP, OP_RET);
+        reset_cpu;
+        cpu.carry = 1'b0;
+        run_until_p(10'h204, 100);
+        assert_eq18("XOR ext (SUB): 5-12 wraps", dbg_T, 18'h3FFF9);
+        assert_eq1 ("XOR ext (SUB): borrow",      cpu.carry, 1'b1);
 
         $display("\n=== EXT ARITH TESTS: %0d passed, %0d failed ===", passed, failed);
         if (failed == 0) $display("ALL PASS");

@@ -233,6 +233,17 @@ module f18a_core #(
     wire [17:0] alu_and = T & S;
     wire [17:0] alu_xor = T ^ S;
     wire [17:0] alu_inv = ~T;
+`ifndef NO_P9_ARITH
+    // P9 redefines `xor` as subtract-with-borrow:
+    //   T_new   = T - S - carry_in_borrow
+    //   carry_new = borrow_out (1 = a borrow happened)
+    // Same multi-precision pattern as `+` (lo first sets carry, hi
+    // consumes it). Pre-set carry=0 before the first cell. Loses
+    // bitwise XOR for code at page 0x200+; bitwise XOR can be
+    // reconstructed when needed via `over inv and swap inv and or`,
+    // or just done at non-P9 pages.
+    wire [18:0] alu_sub_ext = {1'b0, T} - {1'b0, S} - {{18{1'b0}}, carry};
+`endif
     // We extend the F18A's P9 carry-mode beyond what the spec calls
     // for: under arith_ext (P9=1), `2*` and `2/` rotate through the
     // carry latch instead of being plain logical/arithmetic shifts.
@@ -659,7 +670,17 @@ module f18a_core #(
                         dsp <= dsp_prev;
                     end
                     OP_XOR: begin
-                        T   <= alu_xor;
+`ifndef NO_P9_ARITH
+                        if (arith_ext) begin
+                            // P9: subtract-with-borrow.
+                            T     <= alu_sub_ext[17:0];
+                            carry <= alu_sub_ext[18];
+                        end else begin
+                            T <= alu_xor;
+                        end
+`else
+                        T <= alu_xor;
+`endif
                         S   <= dstk_rdata;
                         dsp <= dsp_prev;
                     end
