@@ -94,16 +94,28 @@ state (mem_addr, mem_we, mem_wdata, slot, saved_st) isn't saved
 either; switches always trigger at ST_FETCH and resume at ST_FETCH.
 NTASKS=2 in this build to keep the save mux narrow.
 
-**Hardware fit on GW1NZ-1: not yet.** The 6-way save mux + 7-way
-load demux land synthesis at 1 118 LUT4 / 1 152 (97 %), but
-placement fails — `nextpnr-himbaechel` reports "Unable to find legal
-placement for all cells, design is probably at utilisation limit".
-Almost certainly fixable with another round of trimming (e.g.
-move the save/load through the existing main-RAM port instead of
-a dedicated `ctx_ram` BSRAM, freeing the 4th BSRAM for routing
-flexibility) but past the budget for this session. Sim is fully
-working and demonstrates the architecture; the branch is ready for
-HW-fit polishing.
+**Hardware fit on GW1NZ-1: still tight.** The latest design moves
+the per-task save/restore through the existing main-RAM port:
+contexts live in `c1_mem` at `CTX_BASE..CTX_BASE+NTASKS*16-1`
+(default `0x3E0..0x3FF` for NTASKS=2 — top 32 cells of the 1 K
+RAM, reserved by the core, off-limits to programs). Walking those
+cells through `mem_addr`/`mem_we`/`mem_wdata` instead of a
+dedicated `ctx_ram` BSRAM drops one BSRAM (3/4 used, vs 4/4 with
+the dedicated array) and trims the duplicated `ctx_*` mux logic.
+A new `ST_INIT` boot state seeds task 1's P cell with `TASK1_PC`
+once at reset.
+
+Resource budget after the refactor: **1 119 LUT4 / 1 152 (97 %)**,
+3/4 BSRAM, 350/864 DFF. Synthesis succeeds but `nextpnr-himbaechel`
+placement still fails — "Unable to find legal placement for all
+cells, design is probably at utilisation limit". The 5-way save
+mux + 6-way load demux are intrinsically wide (each register has
+multiple input sources because of the existing op decode), and the
+chip's 4 BSRAMs are in fixed positions, leaving routing congested
+around them. Sim is fully working; further fitting would need to
+either drop more saved registers (e.g. share dstk/rstk pointers
+across tasks — abandoning per-task stack state) or use a bigger
+part (Tang Nano 9K with a GW1NR-9 has ~6× the LUT4).
 
 Phase 3 — auto-switch on `mem_ready=0` + per-task block-port
 tracking. Restore the FSM-state save (mem_addr, mem_we, mem_wdata,

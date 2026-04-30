@@ -77,12 +77,11 @@ module tb_multitask;
     always @(posedge clk) if (resetn) begin
         cycles <= cycles + 1;
         if (cycles < trace_until)
-            $display("cyc=%0d task=%0d st=%0d slot=%0d P=%03h addr=%03h we=%b ti=%b pend=%b ctxa=%h ctxd=%h sidx=%0d nxt=%0d alive=%b",
+            $display("cyc=%0d task=%0d st=%0d slot=%0d P=%03h addr=%03h we=%b wd=%h rd=%h ti=%b pend=%b sidx=%0d nxt=%0d",
                      cycles, cpu.running_task, cpu.st, cpu.slot, cpu.P,
-                     mem_addr, mem_we,
+                     mem_addr, mem_we, mem_wdata, mem_rdata,
                      task_switch_req, cpu.pending_switch,
-                     cpu.ctx_addr, cpu.ctx_rdata, cpu.swctl_idx, cpu.next_task,
-                     2'b11);
+                     cpu.swctl_idx, cpu.next_task);
         if (mem_we && is_uart_tx) begin
             $display("UART %0d: 0x%02h '%s' @ cycle %0d task=%0d",
                      bytes_out, mem_wdata[7:0], mem_wdata[7:0],

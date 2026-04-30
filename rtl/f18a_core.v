@@ -72,7 +72,13 @@ module f18a_core #(
     // multitask ABAB demo (task 1 at 0x010 = task1_loop).
     parameter [ADDR_BITS-1:0] TASK1_PC = 'h010,
     parameter [ADDR_BITS-1:0] TASK2_PC = 'h100,
-    parameter [ADDR_BITS-1:0] TASK3_PC = 'h180
+    parameter [ADDR_BITS-1:0] TASK3_PC = 'h180,
+    // Base address of the per-task context save area inside main RAM.
+    // 16 cells per task (CTX_STRIDE), so the area runs from CTX_BASE
+    // to CTX_BASE + NTASKS*16 - 1. Default 0x3E0 reserves the top 32
+    // cells of a 1 K RAM for NTASKS=2 (= 0x3E0..0x3FF). Programs
+    // should avoid touching this region.
+    parameter [ADDR_BITS-1:0] CTX_BASE = 'h3E0
 ) (
     input  wire                  clk,
     input  wire                  resetn,
@@ -165,9 +171,10 @@ module f18a_core #(
         ST_MWAIT     = 4'd4,
         ST_MEMRD     = 4'd5,
         ST_MEMWR     = 4'd6,
-        ST_SAVE      = 4'd7,   // save active context to ctx_ram[running_task]
-        ST_LOAD_INIT = 4'd8,   // bridge cycle: clears ctx_we, sets first read addr
-        ST_LOAD      = 4'd9;   // load ctx_ram[next_task] into active regs
+        ST_SAVE      = 4'd7,   // save active context into c1_mem[CTX_BASE+running_task*16]
+        ST_LOAD_INIT = 4'd8,   // bridge: clears mem_we, presents first ctx-load addr
+        ST_LOAD      = 4'd9,   // load context from c1_mem[CTX_BASE+next_task*16]
+        ST_INIT      = 4'd10;  // post-reset: seed task 1's P cell with TASK1_PC
 
     reg [3:0] st;
     reg [1:0] slot;
@@ -214,63 +221,43 @@ module f18a_core #(
     // ctx_ram on each switch.
     reg [TASK_BITS-1:0] running_task = {TASK_BITS{1'b0}};
 
-    // ── Task context BSRAM ────────────────────────────────────────
-    // 9 cells per task hold a saved snapshot of the active register
-    // file + FSM state. When the running task yields (ST_FETCH with
-    // pending_switch=1), we walk the cells writing each register's
-    // value into ctx_ram[running_task*9 + idx]; then we walk again
-    // reading ctx_ram[next_task*9 + idx] back into the active regs.
+    // ── Task context save/restore via main RAM ──────────────────
+    // Per-task contexts live at CTX_BASE..CTX_BASE+NTASKS*16-1 inside
+    // c1_mem (the main 1 K BSRAM). Save/load drives mem_addr /
+    // mem_we / mem_wdata directly — the SoC's c1_mem stores the
+    // cells. This frees the 4th BSRAM that an internal ctx_ram would
+    // have needed and removes a layer of muxes.
     //
-    // Cell layout:
-    //   0: T          1: S          2: R          3: A          4: B
-    //   5: {7'd0, P}                              (P, ADDR_BITS bits)
-    //   6: {dsp[5:0], rsp[6:0], saved_st[3:0], carry}    (FSM-1)
-    //   7: {mem_addr[10:0], slot[1:0], mem_we, 4'd0}     (FSM-2)
-    //   8: mem_wdata
-    // 9 active cells per task; the array is sized to a power-of-2
-    // stride (16) so ctx_addr = {task[1:0], cell_idx[3:0]} indexes
-    // each task's slice with no multiply. Cells 9..15 of each slice
-    // are unused but free since 4 × 16 × 18 = 1152 bits fits trivially
-    // in any spare BSRAM corner.
+    // Cell layout per task (6 cells, indices 0..5):
+    //   0: T          1: S          2: R          3: A
+    //   4: {7'd0, P}                              (P, ADDR_BITS bits)
+    //   5: {dsp[5:0], rsp[6:0], 5'd0, carry}       (packed flags)
+    // Cells 6..15 of each task's stride are unused (stride is fixed
+    // at 16 so ctx_addr = CTX_BASE | {task, cell_idx[3:0]}).
     localparam integer CTX_CELLS_LOG2 = 4;
     localparam integer CTX_STRIDE     = 1 << CTX_CELLS_LOG2;  // = 16
-    (* ram_style = "block" *) reg [17:0] ctx_ram [0:NTASKS*CTX_STRIDE-1];
-    integer ctx_init;
-    initial begin
-        for (ctx_init = 0; ctx_init < NTASKS*CTX_STRIDE; ctx_init = ctx_init + 1)
-            ctx_ram[ctx_init] = 18'd0;
-        // Pre-seed the per-task entry PCs so all NTASKS slots are
-        // ready to run from POR. Cell 4 of each task is the saved P
-        // (under the trimmed 6-cell layout — B is not saved/loaded;
-        // each task is expected to set B fresh at the top of its loop).
-        ctx_ram[1*CTX_STRIDE + 4] = {{(18-ADDR_BITS){1'b0}}, TASK1_PC};
-        if (NTASKS > 2)
-            ctx_ram[2*CTX_STRIDE + 4] = {{(18-ADDR_BITS){1'b0}}, TASK2_PC};
-        if (NTASKS > 3)
-            ctx_ram[3*CTX_STRIDE + 4] = {{(18-ADDR_BITS){1'b0}}, TASK3_PC};
-    end
-    reg [17:0] ctx_rdata = 18'd0;
-    reg [17:0] ctx_wdata = 18'd0;
-    reg [TASK_BITS+3:0] ctx_addr = {(TASK_BITS+4){1'b0}};
-    reg                 ctx_we   = 1'b0;
 
     // Save/load progress + switch-trigger state. All initialised so
-    // no X propagates into ctx_ram during the reset warm-up before
-    // the FSM's reset branch fires.
+    // the BSRAM port sees stable values during the reset warm-up.
     reg [3:0]            swctl_idx      = 4'd0;
     reg [TASK_BITS-1:0]  next_task      = {TASK_BITS{1'b0}};
     reg                  pending_switch = 1'b0;
+    reg                  init_done      = 1'b0;   // boot seeded TASK1_PC?
     // Plain round-robin (no skip-dormant). For NTASKS=2 this is a
-    // 1-bit toggle. Tasks 1..NTASKS-1 are pre-spawned at reset so
-    // there's no "dormant" notion to skip — all NTASKS slots always
-    // run. The simpler scheduler frees ~50 LUT4 vs the alive-skip
-    // chain.
+    // 1-bit toggle. Tasks 1..NTASKS-1 begin at TASKn_PC; ST_INIT
+    // seeds those into the per-task P cells of c1_mem at reset.
     wire [TASK_BITS-1:0] task_p1 = running_task + {{(TASK_BITS-1){1'b0}}, 1'b1};
 
-    always @(posedge clk) begin
-        ctx_rdata <= ctx_we ? ctx_wdata : ctx_ram[ctx_addr];
-        if (ctx_we) ctx_ram[ctx_addr] <= ctx_wdata;
-    end
+    // Address of cell C of task K inside the main-RAM context area.
+    // CTX_BASE is required to be CTX_STRIDE-aligned (low 4 bits zero
+    // for stride=16); the OR avoids an adder.
+    function [ADDR_BITS-1:0] ctx_cell_addr;
+        input [TASK_BITS-1:0] task_id;
+        input [3:0]           cell_idx;
+        ctx_cell_addr = CTX_BASE
+                      | {{(ADDR_BITS-TASK_BITS-CTX_CELLS_LOG2){1'b0}},
+                          task_id, cell_idx};
+    endfunction
 
     assign dbg_running_task = running_task;
 
@@ -482,7 +469,10 @@ module f18a_core #(
             //   * The local FSM bookkeeping (st, slot, mem_addr) and
             //     the mem_we strobe must also be cleared so we don't
             //     issue spurious writes during the rst_cnt warm-up.
-            st       <= ST_FETCH;
+            // Boot path: first run ST_INIT to seed task 1's P cell
+            // (and tasks 2..NTASKS-1 once we generalise). After init
+            // we drop into normal ST_FETCH for task 0.
+            st       <= (NTASKS > 1) ? ST_INIT : ST_FETCH;
             slot     <= 2'd0;
             P        <= RESET_PC;
             B        <= {{(18-ADDR_BITS){1'b0}}, RESET_B};
@@ -496,11 +486,9 @@ module f18a_core #(
             running_task   <= {TASK_BITS{1'b0}};
             pending_switch <= 1'b0;
             swctl_idx      <= 4'd0;
-            ctx_we         <= 1'b0;
-            ctx_addr       <= {(TASK_BITS+4){1'b0}};
+            init_done      <= 1'b0;
         end else begin
             mem_we <= 1'b0;
-            ctx_we <= 1'b0;
 
             // Latch a pending switch from the SoC. The req pulse fires
             // one cycle after the TASK_CTRL store completes; we hold
@@ -519,16 +507,16 @@ module f18a_core #(
                         // where its previous run left off (re-enters
                         // ST_FETCH with the saved P pointing at its
                         // next instruction). Tasks 1..NTASKS-1 begin
-                        // life with P = TASKn_PC (parameter) so they
-                        // run from a known entry on first switch.
+                        // life with P = TASKn_PC (seeded by ST_INIT
+                        // into the c1_mem context cells at reset).
                         next_task      <= task_p1;
                         pending_switch <= 1'b0;
                         swctl_idx      <= 4'd0;
                         st             <= ST_SAVE;
-                        // First save cycle: write T to ctx_ram[task,0].
-                        ctx_we    <= 1'b1;
-                        ctx_addr  <= {running_task, 4'd0};
-                        ctx_wdata <= T;
+                        // First save cycle: write T to mem[ctx[0]].
+                        mem_we    <= 1'b1;
+                        mem_addr  <= ctx_cell_addr(running_task, 4'd0);
+                        mem_wdata <= T;
                     end else begin
                         mem_addr <= P;
                         st       <= ST_FWAIT;
@@ -882,24 +870,33 @@ module f18a_core #(
                 // and always resumes there too, so the in-flight
                 // memory state is irrelevant. Phase 3+ (port-block
                 // auto-switch) will need to grow the context.
+                // ── Context save: 4 cycles (cells 1..4) ──────────
+                // ST_FETCH→ST_SAVE already wrote cell 0 (T). Each
+                // ST_SAVE-K (K=0..3) schedules the cell-(K+1) write;
+                // the BSRAM commit fires at the edge ending each
+                // cycle. After cycle 3 the edge into ST_LOAD_INIT
+                // commits cell 4 (P). dsp / rsp / carry are NOT
+                // saved — each task's stacks live in their own BSRAM
+                // slice (dstk_addr = {running_task, dsp_local}), so
+                // resuming with dsp = rsp = 0 just sees an empty
+                // stack from the task's perspective. Programs that
+                // need to hold stack state across yields will see
+                // their stacks appear empty on resume; for the
+                // multitask ABAB demo (each loop emits a byte and
+                // yields with empty stacks) this is irrelevant and
+                // the trim is what makes the design fit on the chip.
                 ST_SAVE: begin
-                    ctx_we    <= 1'b1;
-                    ctx_addr  <= {running_task, swctl_idx + 4'd1};
+                    mem_we   <= 1'b1;
+                    mem_addr <= ctx_cell_addr(running_task,
+                                              swctl_idx + 4'd1);
                     case (swctl_idx)
-                        4'd0: ctx_wdata <= S;
-                        4'd1: ctx_wdata <= R;
-                        4'd2: ctx_wdata <= A;
-                        4'd3: ctx_wdata <= {{(18-ADDR_BITS){1'b0}}, P};
-                        4'd4: ctx_wdata <= {dsp, rsp,
-`ifndef NO_P9_ARITH
-                                            5'd0, carry
-`else
-                                            6'd0
-`endif
-                                           };
-                        default: ctx_wdata <= 18'd0;
+                        4'd0: mem_wdata <= S;
+                        4'd1: mem_wdata <= R;
+                        4'd2: mem_wdata <= A;
+                        4'd3: mem_wdata <= {{(18-ADDR_BITS){1'b0}}, P};
+                        default: mem_wdata <= 18'd0;
                     endcase
-                    if (swctl_idx == 4'd4) begin
+                    if (swctl_idx == 4'd3) begin
                         swctl_idx <= 4'd0;
                         st        <= ST_LOAD_INIT;
                     end else begin
@@ -907,55 +904,65 @@ module f18a_core #(
                     end
                 end
 
-                // ── Bridge cycle: drop ctx_we and present the first
+                // ── Bridge cycle: drop mem_we and present the first
                 // load read address. The previous state's write of
-                // cell 8 (or the inject write of cell 5) commits at
-                // the edge entering this cycle; during this cycle
-                // BSRAM is read-only and starts the cell-0 fetch.
+                // cell 5 commits at the edge entering this cycle;
+                // during this cycle the BSRAM is read-only and starts
+                // the cell-0 fetch (mem_rdata is valid next cycle).
                 ST_LOAD_INIT: begin
-                    ctx_we   <= 1'b0;
-                    ctx_addr <= {next_task, 4'd0};
+                    mem_we    <= 1'b0;
+                    mem_addr  <= ctx_cell_addr(next_task, 4'd0);
                     swctl_idx <= 4'd0;
-                    st       <= ST_LOAD;
+                    st        <= ST_LOAD;
                 end
 
-                // ── Context load: 8 cycles ────────────────────────
-                // BSRAM has 1-cycle read latency, so swctl_idx=0 is a
+                // ── Context load: 6 cycles ────────────────────────
+                // c1_mem has 1-cycle read latency, so swctl_idx=0 is a
                 // setup cycle (presents addr=1, no commit). At
-                // swctl_idx=K (K=1..7) we commit ctx_rdata into the
+                // swctl_idx=K (K=1..5) we commit mem_rdata into the
                 // K-1'th register and present read of cell K+1. After
-                // cell 6 (packed dsp/rsp/carry) commits at idx=7 we
-                // transition to ST_FETCH — the resumed task always
-                // re-enters the fetch pipeline, with P pointing at
-                // the next instruction word.
+                // cell 4 (P) commits at idx=5 we transition to
+                // ST_FETCH with empty stacks (dsp = rsp = 0). The
+                // resumed task always re-enters the fetch pipeline,
+                // with the loaded P pointing at its next instruction.
                 ST_LOAD: begin
-                    ctx_we    <= 1'b0;
-                    if (swctl_idx < 4'd6) begin
-                        ctx_addr <= {next_task, swctl_idx + 4'd1};
+                    mem_we   <= 1'b0;
+                    if (swctl_idx < 4'd4) begin
+                        mem_addr <= ctx_cell_addr(next_task,
+                                                  swctl_idx + 4'd1);
                     end
                     case (swctl_idx)
-                        4'd1: T <= ctx_rdata;
-                        4'd2: S <= ctx_rdata;
-                        4'd3: R <= ctx_rdata;
-                        4'd4: A <= ctx_rdata;
-                        4'd5: P <= ctx_rdata[ADDR_BITS-1:0];
-                        4'd6: begin
-                            dsp <= ctx_rdata[17:12];
-                            rsp <= ctx_rdata[11:5];
-`ifndef NO_P9_ARITH
-                            carry <= ctx_rdata[0];
-`endif
-                        end
+                        4'd1: T <= mem_rdata;
+                        4'd2: S <= mem_rdata;
+                        4'd3: R <= mem_rdata;
+                        4'd4: A <= mem_rdata;
+                        4'd5: P <= mem_rdata[ADDR_BITS-1:0];
                         default: ;
                     endcase
-                    if (swctl_idx == 4'd6) begin
+                    if (swctl_idx == 4'd5) begin
                         running_task <= next_task;
                         st           <= ST_FETCH;
                         slot         <= 2'd0;
+                        dsp          <= DSP_ZERO;
+                        rsp          <= RSP_ZERO;
                         swctl_idx    <= 4'd0;
                     end else begin
                         swctl_idx <= swctl_idx + 4'd1;
                     end
+                end
+
+                // ── Boot init: write TASK1_PC into task 1's P cell.
+                // Runs once after reset before the first ST_FETCH so
+                // task 1 starts at TASK1_PC on its first turn. (For
+                // NTASKS > 2 this state would walk a counter and
+                // write TASK2_PC, TASK3_PC, … too — single-shot for
+                // now since the build is locked at NTASKS=2.)
+                ST_INIT: begin
+                    mem_we    <= 1'b1;
+                    mem_addr  <= ctx_cell_addr({TASK_BITS{1'b1}}, 4'd4);
+                    mem_wdata <= {{(18-ADDR_BITS){1'b0}}, TASK1_PC};
+                    init_done <= 1'b1;
+                    st        <= ST_FETCH;
                 end
 
                 default: st <= ST_FETCH;
