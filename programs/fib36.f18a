@@ -1,0 +1,160 @@
+# 36-bit Fibonacci — exercises the F18A's P9 add-with-carry mode.
+#
+# State: prev / curr Fib values, each split across two 18-bit cells
+# (low + high). Each iteration computes
+#
+#     next = prev + curr     (36-bit, P9 add-with-carry chains the
+#                             two halves through the carry latch)
+#
+# then shifts prev = curr; curr = next, and emits 2 UART bytes:
+#   byte 0 = curr_lo & 0xFF      (low byte of bits  0..17)
+#   byte 1 = curr_hi & 0xFF      (low byte of bits 18..35)
+#
+# Two bytes is enough to verify the carry chain works: once the
+# value passes 2^18 (Fib(28) = 317811) the low byte of curr_hi
+# becomes non-zero, and a host-side reference can check both bytes
+# match the expected 36-bit Fibonacci value at every step.
+#
+# All execution stays in P9 page (0x200+), where the F18A spec'd
+# carry-mode `+` chains the lo + hi adds. We avoid `2/` entirely
+# (our extension makes it rotate-through-carry under P9, which
+# would mangle the carry latch we want intact during the multi-
+# precision add) — byte extraction is plain `AND 0xFF`.
+#
+# Clear-carry idiom: `0 0 +` in P9 — adds 0+0+old_carry, captures
+# overflow=0 into the new carry latch, drops the result.
+
+#origin 0x200
+
+#define UART_TX 0x7F1
+#define PORT    0x7F9
+#define COUNT   30
+#define MASK_8  0xFF
+#define MINUS1  0x3FFFF
+#define ONE     0x01
+
+#variable counter
+#variable prev_lo
+#variable prev_hi
+#variable curr_lo
+#variable curr_hi
+#variable next_lo
+#variable next_hi
+
+start:
+    @p b!
+    [UART_TX]                       # B = UART_TX (held throughout)
+
+    @p a!
+    [counter]
+    @p . .
+    [COUNT]
+    !                               # mem[counter] = 30
+
+    @p a!
+    [prev_lo]
+    @p . .
+    [0]
+    !                               # mem[prev_lo] = 0
+    @p a!
+    [prev_hi]
+    @p . .
+    [0]
+    !                               # mem[prev_hi] = 0
+
+    @p a!
+    [curr_lo]
+    @p . .
+    [ONE]
+    !                               # mem[curr_lo] = 1
+    @p a!
+    [curr_hi]
+    @p . .
+    [0]
+    !                               # mem[curr_hi] = 0
+
+loop:
+    # Clear carry: P9 + of two zeros captures overflow=0 → carry := 0.
+    @p . .
+    [0]
+    @p . .
+    [0]
+    + drop
+
+    # next_lo = prev_lo + curr_lo (P9 +, starts the carry chain).
+    @p a!
+    [prev_lo]
+    @
+    @p a!
+    [curr_lo]
+    @
+    +
+    @p a!
+    [next_lo]
+    !
+
+    # next_hi = prev_hi + curr_hi + carry_from_lo (P9 +).
+    @p a!
+    [prev_hi]
+    @
+    @p a!
+    [curr_hi]
+    @
+    +
+    @p a!
+    [next_hi]
+    !
+
+    # Emit low byte of curr_lo, then low byte of curr_hi.
+    @p a!
+    [curr_lo]
+    @ @p . .
+    [MASK_8]
+    and !b
+
+    @p a!
+    [curr_hi]
+    @ @p . .
+    [MASK_8]
+    and !b
+
+    # Shift state: prev <- curr ; curr <- next.
+    @p a!
+    [curr_lo]
+    @
+    @p a!
+    [prev_lo]
+    !
+    @p a!
+    [curr_hi]
+    @
+    @p a!
+    [prev_hi]
+    !
+    @p a!
+    [next_lo]
+    @
+    @p a!
+    [curr_lo]
+    !
+    @p a!
+    [next_hi]
+    @
+    @p a!
+    [curr_hi]
+    !
+
+    # counter--; if zero, exit.
+    @p a!
+    [counter]
+    @
+    @p +
+    [MINUS1]
+    dup if:done
+    !
+    drop
+    jump:loop
+
+done:
+    drop
+    jump:PORT
