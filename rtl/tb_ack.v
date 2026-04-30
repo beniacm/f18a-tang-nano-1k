@@ -89,7 +89,7 @@ module tb_ack;
         .mem_addr (mem_addr),
         .mem_we   (mem_we),
         .mem_wdata(mem_wdata),
-        .mem_rdata(mem_rdata), .mem_ready(1'b1),
+        .mem_rdata(mem_rdata), .mem_ready(1'b1), .task_switch_req(1'b0), .task_switch_data(18'd0), .dbg_running_task(),
         .dbg_T(dbg_T), .dbg_I(dbg_I), .dbg_P(dbg_P), .dbg_slot(dbg_slot)
     );
 

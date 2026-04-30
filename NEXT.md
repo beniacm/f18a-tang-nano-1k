@@ -72,7 +72,7 @@ Architecture (4 task contexts on GW1NZ-1):
   clears `task_blocked[task_id]`. At reset only task 0 is runnable
   (`task_blocked = 4'b1110`); other tasks need explicit spawning.
 
-Phase 1 (this branch) — **per-task stack BSRAM slicing**.
+Phase 1 — **per-task stack BSRAM slicing** (in this branch).
 `running_task` register added, `dstk[]`/`rstk[]` widened to NTASKS ×
 depth, addresses prepended with `running_task`. `running_task` is
 hard-pinned to 0 until phases 2–4 land, so all single-task tests pass
@@ -82,12 +82,37 @@ at 18-bit width). Verified on real hardware: A(3,3) iterative
 146,219 hw cycles vs 146,271 sim — unchanged. Foundation in place
 for phases 2–4 to add the scheduler without further BSRAM growth.
 
-Phase 2 — context save/restore + manual switch.
+Phase 2 — **context save/restore + manual yield** (in this branch).
+Working in iverilog sim: `programs/mt_abab.f18a` on `rtl/tb_multitask.v`
+emits a clean `ABABABAB…` round-robin sequence at 70 cycles/character
+(both tasks pre-spawned at reset; each emits its char and writes
+`TASK_CTRL` (0x7F7) to yield). Switch overhead ≈ 14 cycles
+(6-cell save + 1-cycle bridge + 7-cycle load). The trimmed context
+saves T, S, R, A, P, dsp, rsp, carry only — B is not saved (each
+task's loop sets B fresh from `@p b!` before each emit). Mid-FSM
+state (mem_addr, mem_we, mem_wdata, slot, saved_st) isn't saved
+either; switches always trigger at ST_FETCH and resume at ST_FETCH.
+NTASKS=2 in this build to keep the save mux narrow.
 
-Phase 3 — auto-switch on `mem_ready=0` + per-task block-port tracking.
+**Hardware fit on GW1NZ-1: not yet.** The 6-way save mux + 7-way
+load demux land synthesis at 1 118 LUT4 / 1 152 (97 %), but
+placement fails — `nextpnr-himbaechel` reports "Unable to find legal
+placement for all cells, design is probably at utilisation limit".
+Almost certainly fixable with another round of trimming (e.g.
+move the save/load through the existing main-RAM port instead of
+a dedicated `ctx_ram` BSRAM, freeing the 4th BSRAM for routing
+flexibility) but past the budget for this session. Sim is fully
+working and demonstrates the architecture; the branch is ready for
+HW-fit polishing.
 
-Phase 4 — FIFO scheduler + SoC TASK_CTRL spawn + multi-task demos
-(2-task ABAB UART output, then 4-task).
+Phase 3 — auto-switch on `mem_ready=0` + per-task block-port
+tracking. Restore the FSM-state save (mem_addr, mem_we, mem_wdata,
+slot, saved_st) so the resumed task picks up mid-instruction. Add
+SoC `uart_rx_ready` / `uart_tx_ready` / `inst_port_ready` outputs
+into the core for the unblock check.
+
+Phase 4 — FIFO scheduler + SoC TASK_CTRL spawn-inject + multi-task
+demos (4-task with port-blocked tasks waking on UART RX, etc.).
 
 ### 54 MHz on hardware
 `make f18a.fs PLL_FREQ=54` synthesises clean (106 MHz fmax post-route,

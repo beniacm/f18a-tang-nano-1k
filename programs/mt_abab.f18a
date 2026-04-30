@@ -1,0 +1,55 @@
+# Two-task cooperative-multitasking demo.
+#
+# Both tasks are pre-spawned at reset (NTASKS=2 build): task 0 begins
+# at the streaming-port loader's `jump:0` target = 0x000 (= start
+# of this file), task 1 begins at the TASK1_PC parameter = 0x010
+# (= task1_loop label below). Each task loops emitting its
+# character ('A' / 'B') and yielding via a write to TASK_CTRL
+# (0x7F7); the core's round-robin scheduler then switches to the
+# other task. Output is BABABAB... — task 1 runs first because at
+# reset running_task = 0 and the very first thing task 0 does is
+# yield, which hands control to task 1 before task 0's emit fires.
+#
+# Each task does a fresh `@p b! [UART_TX]` before each emit because
+# B was clobbered by the previous yield's `b!` to TASK_CTRL.
+
+#origin 0x000
+
+#define UART_TX   0x7F1
+#define TASK_CTRL 0x7F7
+#define CHAR_A    0x41
+#define CHAR_B    0x42
+#define ZERO      0x00
+
+# ── Task 0 ────────────────────────────────────────────────────────
+# At RESET_PC = 0x000.
+task0_loop:
+    @p b!
+    [UART_TX]
+    @p . .
+    [CHAR_A]
+    !b                              # emit 'A'
+
+    @p b!
+    [TASK_CTRL]
+    @p . .
+    [ZERO]
+    !b                              # write 0 to TASK_CTRL → yield
+    jump:task0_loop
+
+
+# ── Task 1 ────────────────────────────────────────────────────────
+# At TASK1_PC = 0x010 (parameter on the f18a_core instantiation).
+task1_loop:
+    @p b!
+    [UART_TX]
+    @p . .
+    [CHAR_B]
+    !b                              # emit 'B'
+
+    @p b!
+    [TASK_CTRL]
+    @p . .
+    [ZERO]
+    !b                              # yield
+    jump:task1_loop

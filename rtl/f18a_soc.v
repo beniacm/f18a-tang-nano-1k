@@ -253,7 +253,10 @@ module top (
 
     wire c1_mem_ready;
 
-    f18a_core #(.ADDR_BITS(C1_ADDR_BITS), .DSTK_DEPTH(C1_DSTK_DEPTH), .DSP_BITS(C1_DSP_BITS),
+    f18a_core #(.ADDR_BITS(C1_ADDR_BITS),
+                .NTASKS(2), .TASK_BITS(1),
+                .TASK1_PC(11'h00B),  // matches task1_loop in programs/mt_abab.f18a
+                .DSTK_DEPTH(C1_DSTK_DEPTH), .DSP_BITS(C1_DSP_BITS),
                 .RSTK_DEPTH(C1_RSTK_DEPTH), .RSP_BITS(C1_RSP_BITS),
                 .RESET_PC(11'h7F9),         // boot at INST_PORT
                 .MULS_HANDLER_ADDR(11'h3E0),
@@ -267,6 +270,9 @@ module top (
         .mem_wdata (c1_wdata),
         .mem_rdata (c1_rdata),
         .mem_ready (c1_mem_ready),
+        .task_switch_req  (task_switch_req),
+        .task_switch_data (task_switch_data),
+        .dbg_running_task (),
         .dbg_T     (), .dbg_I     (), .dbg_P     (), .dbg_slot  ()
     );
 
@@ -279,7 +285,21 @@ module top (
         C1_LED       = 11'h7F3,
         C1_BUTTON    = 11'h7F4,
         C1_TICKS     = 11'h7F5,
+        C1_TASK_CTRL = 11'h7F7,
         C1_INST_PORT = 11'h7F9;
+
+    // Multitasking: write-only TASK_CTRL register at 0x7F7.
+    //   Write value V: yield to the next runnable task in round-robin.
+    //   If V[ADDR_BITS-1:0] != 0, the next-up task is also "spawned":
+    //     its P cell in the core's context BSRAM is set to V[10:0],
+    //     its task_alive bit is cleared, and we switch to it. (First
+    //     spawn from task 0 brings task 1 alive; subsequent yields
+    //     with V=0 round-robin between alive tasks.)
+    // The write triggers a 1-cycle pulse on task_switch_req carrying
+    // the value as task_switch_data; the core latches it and drives
+    // the save/load FSM at the next ST_FETCH boundary.
+    reg          task_switch_req  = 1'b0;
+    reg  [17:0]  task_switch_data = 18'd0;
 
     // Free-running 18-bit tick counter. One F18A word, no shadow
     // games. Wraps every 2^18 cycles ≈ 9.7 ms at 27 MHz / 4.9 ms at
@@ -424,6 +444,15 @@ module top (
             // high in software; pin output inverts for active-low pads).
             if (c1_resetn && c1_we && c1_is_io && c1_addr == C1_LED) begin
                 led_reg <= c1_wdata[2:0];
+            end
+
+            // TASK_CTRL write → 1-cycle pulse on task_switch_req. The
+            // core sees the pulse, latches task_switch_data, and fires
+            // the save/load FSM at the next ST_FETCH boundary.
+            task_switch_req <= 1'b0;
+            if (c1_resetn && c1_we && c1_is_io && c1_addr == C1_TASK_CTRL) begin
+                task_switch_req  <= 1'b1;
+                task_switch_data <= c1_wdata;
             end
         end
     end
