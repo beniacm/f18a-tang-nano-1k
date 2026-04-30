@@ -233,14 +233,14 @@ module f18a_core #(
     wire [17:0] alu_and = T & S;
     wire [17:0] alu_xor = T ^ S;
     wire [17:0] alu_inv = ~T;
-    // P9-mode (arith_ext=1) turns the plain shifts into rotate-through
-    // -carry: SHL shifts the carry latch in on the right and the bit
-    // falling off the left lands in carry; SHR mirrors. Pairs with the
-    // P9-mode add carry chain to give multi-precision shifts (e.g.
-    // a 36-bit << 1 is two SHLs at adjacent code-cell pages, with the
-    // carry latch as the bridge between cells).
-    // Plain mode: SHL drops MSB and shifts in 0; SHR is arithmetic
-    // (sign-extends MSB). Same as before.
+    // We extend the F18A's P9 carry-mode beyond what the spec calls
+    // for: under arith_ext (P9=1), `2*` and `2/` rotate through the
+    // carry latch instead of being plain logical/arithmetic shifts.
+    // The bit shifted out lands in carry, the bit shifted in came
+    // from the previous carry. Pairs with the P9-mode add-with-carry
+    // to give multi-precision shifts on top of multi-precision adds.
+    // Plain mode (P9=0): `2*` drops MSB and shifts in 0; `2/` is
+    // arithmetic right shift (sign-extends).
 `ifdef NO_P9_ARITH
     wire [17:0] alu_shl = {T[16:0], 1'b0};
     wire [17:0] alu_shr = {T[17], T[17:1]};
