@@ -233,8 +233,23 @@ module f18a_core #(
     wire [17:0] alu_and = T & S;
     wire [17:0] alu_xor = T ^ S;
     wire [17:0] alu_inv = ~T;
+    // P9-mode (arith_ext=1) turns the plain shifts into rotate-through
+    // -carry: SHL shifts the carry latch in on the right and the bit
+    // falling off the left lands in carry; SHR mirrors. Pairs with the
+    // P9-mode add carry chain to give multi-precision shifts (e.g.
+    // a 36-bit << 1 is two SHLs at adjacent code-cell pages, with the
+    // carry latch as the bridge between cells).
+    // Plain mode: SHL drops MSB and shifts in 0; SHR is arithmetic
+    // (sign-extends MSB). Same as before.
+`ifdef NO_P9_ARITH
     wire [17:0] alu_shl = {T[16:0], 1'b0};
     wire [17:0] alu_shr = {T[17], T[17:1]};
+`else
+    wire        shl_in  = arith_ext ? carry : 1'b0;
+    wire        shr_in  = arith_ext ? carry : T[17];   // sign-extend if !P9
+    wire [17:0] alu_shl = {T[16:0], shl_in};
+    wire [17:0] alu_shr = {shr_in,  T[17:1]};
+`endif
 
 `ifndef MULS_TRAP
     // Multiply-step (+*) precomputation.
@@ -589,10 +604,24 @@ module f18a_core #(
                     // ── ALU ────────────────────────────────
                     OP_INV: T <= alu_inv;
 `ifndef NO_SHL
-                    OP_SHL: T <= alu_shl;
+                    OP_SHL: begin
+                        T <= alu_shl;
+`ifndef NO_P9_ARITH
+                        // P9 turns SHL into rotate-through-carry: the
+                        // bit dropping off the left becomes the next
+                        // carry, the bit shifted in on the right was
+                        // the previous carry (handled in alu_shl).
+                        if (arith_ext) carry <= T[17];
+`endif
+                    end
 `endif
 `ifndef NO_SHR
-                    OP_SHR: T <= alu_shr;
+                    OP_SHR: begin
+                        T <= alu_shr;
+`ifndef NO_P9_ARITH
+                        if (arith_ext) carry <= T[0];
+`endif
+                    end
 `endif
 `ifndef NO_MULS
                     OP_MULS: begin

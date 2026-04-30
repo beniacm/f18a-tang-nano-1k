@@ -7,6 +7,8 @@ module tb_extarith;
         OP_JMP  = 5'o02,
         OP_FETP = 5'o10,
         OP_MULS = 5'o20,
+        OP_SHL  = 5'o21,
+        OP_SHR  = 5'o22,
         OP_ADD  = 5'o24,
         OP_NOP  = 5'o34,
         OP_ASTO = 5'o37;
@@ -166,6 +168,59 @@ module tb_extarith;
         assert_eq18("MULS ext: T", dbg_T, 18'd1);
         assert_eq18("MULS ext: A", cpu.A, 18'd0);
         assert_eq1 ("MULS ext: carry out", cpu.carry, 1'b0);
+
+        // ── Plain SHL drops MSB, shifts in 0 (no carry interaction) ──
+        clear_mem;
+        mem[0] = pack4(OP_FETP, OP_SHL, OP_NOP, OP_RET);
+        mem[1] = 18'h2C001;        // bit 17 set, bit 0 set
+        mem[2] = pack4(OP_NOP, OP_NOP, OP_NOP, OP_RET);
+        reset_cpu;
+        cpu.carry = 1'b1;
+        run_until_p(10'h003, 60);
+        assert_eq18("SHL normal: drops MSB, fills 0", dbg_T, 18'h18002);
+        assert_eq1 ("SHL normal: carry unchanged",     cpu.carry, 1'b1);
+
+        // ── P9 SHL = rotate-through-carry left ───────────────────────
+        clear_mem;
+        mem[0]       = br0(OP_JMP, 10'h200);
+        mem[10'h200] = pack4(OP_FETP, OP_SHL, OP_NOP, OP_RET);
+        mem[10'h201] = 18'h2C001;
+        mem[10'h202] = pack4(OP_NOP, OP_NOP, OP_NOP, OP_RET);
+        reset_cpu;
+        cpu.carry = 1'b1;
+        run_until_p(10'h203, 80);
+        // input  = 0x2C001  bit 17 = 1
+        // expect = (0x2C001 << 1) | carry_in = 0x18002 | 1 = 0x18003
+        // new carry = old MSB = 1
+        assert_eq18("SHL ext (RCL): T",      dbg_T,    18'h18003);
+        assert_eq1 ("SHL ext (RCL): carry",  cpu.carry, 1'b1);
+
+        // ── Plain SHR is arithmetic (sign-extends) ───────────────────
+        clear_mem;
+        mem[0] = pack4(OP_FETP, OP_SHR, OP_NOP, OP_RET);
+        mem[1] = 18'h2C001;        // bit 17 set, bit 0 set
+        mem[2] = pack4(OP_NOP, OP_NOP, OP_NOP, OP_RET);
+        reset_cpu;
+        cpu.carry = 1'b0;
+        run_until_p(10'h003, 60);
+        // sign-extend: bit 17 stays 1; result = 0x36000 | (0x2C001 >> 1) = 0x36000
+        assert_eq18("SHR normal: arith (sign-ext)", dbg_T, 18'h36000);
+        assert_eq1 ("SHR normal: carry unchanged",  cpu.carry, 1'b0);
+
+        // ── P9 SHR = rotate-through-carry right ──────────────────────
+        clear_mem;
+        mem[0]       = br0(OP_JMP, 10'h200);
+        mem[10'h200] = pack4(OP_FETP, OP_SHR, OP_NOP, OP_RET);
+        mem[10'h201] = 18'h2C001;
+        mem[10'h202] = pack4(OP_NOP, OP_NOP, OP_NOP, OP_RET);
+        reset_cpu;
+        cpu.carry = 1'b1;
+        run_until_p(10'h203, 80);
+        // input  = 0x2C001, carry_in = 1
+        // expect = (carry_in << 17) | (0x2C001 >> 1) = 0x20000 | 0x16000 = 0x36000
+        // new carry = old LSB = 1
+        assert_eq18("SHR ext (RCR): T",     dbg_T,    18'h36000);
+        assert_eq1 ("SHR ext (RCR): carry", cpu.carry, 1'b1);
 
         $display("\n=== EXT ARITH TESTS: %0d passed, %0d failed ===", passed, failed);
         if (failed == 0) $display("ALL PASS");

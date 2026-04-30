@@ -17,6 +17,16 @@
   1.7×–2.3× faster in cycles (BSRAM-stack ops cost more than in-core
   rstk recursion), at the cost of much deeper hardware stacks
   (peak rsp = 121 for A(3,3) vs 0 for native iterative).
+- **P9 enhances shifts too.** P9 was previously only an arithmetic-
+  carry-chain switch (turns `+` and `+*` into add-with-carry). Now
+  also turns `SHL`/`SHR` into rotate-through-carry: code running at
+  P9 (page 0x200+) sees the bit dropping off the end of the shift
+  land in the carry latch, and the bit shifting in on the other end
+  taken from carry. Pairs with the existing P9 add-with-carry to
+  give multi-precision shifts (e.g. a 36-bit `<<1` becomes two
+  P9-mode SHLs across a lo/hi cell pair). Non-P9 shifts are
+  unchanged: `SHL` drops MSB and shifts in 0; `SHR` is arithmetic
+  (sign-extends MSB). Cost: +13 LUT4. Verified by `tb_extarith.v`.
 - **dstk + rstk in BSRAM.** Both stacks moved out of distributed LUT
   RAM into block RAM (one BSRAM each). Reads use a one-cycle-ahead
   combinational `next_dsp` / `next_rsp` lookahead so the registered
